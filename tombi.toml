@@ -1,0 +1,9 @@
+toml-version = "v1.1.0"
+
+[schema]
+strict = false
+
+[[schemas]]
+toml-version = "v1.1.0"
+path = "tombi://www.schemastore.org/cargo.json"
+include = ["**/Cargo.toml"]

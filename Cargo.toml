@@ -1,0 +1,78 @@
+[package]
+name = "landline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[workspace]
+resolver = "3"
+members = ["crates/spa"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Shitty pipewire library"
+homepage = "https://github.com/herabit/landline"
+repository = "https://github.com/herabit/landline"
+license = "MIT OR Apache-2.0"
+keywords = []
+categories = []
+publish = false
+
+[workspace.dependencies]
+bitflags = {
+  version = "2.13.1",
+  default-features = false,
+}
+bytes = {
+  version = "1.12.1",
+  default-features = false,
+}
+log = {
+  version = "0.4.33",
+  default-features = false,
+}
+tokio = {
+  version = "1.53.1",
+  default-features = false,
+}
+tokio-stream = {
+  version = "0.1.19",
+  default-features = false,
+}
+tokio-util = {
+  version = "0.7.19",
+  default-features = false,
+}
+tracing = {
+  version = "0.1.44",
+  default-features = false,
+}
+
+# [workspace.lints]
+# Lol
+
+[workspace.lints.clippy]
+# This doesn't apply in all the cases it should... REEEEEEEEEEEEE
+inline_trait_bounds = "warn"
+# pedantic = "deny"
+
+[workspace.lints.rust]
+let_underscore_drop = "warn"
+
+[dependencies]
+landline-spa = { path = "./crates/spa/" }
+
+[lints]
+workspace = true
+
+[profile.dev]
+opt-level = 3

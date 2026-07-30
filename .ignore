@@ -1,0 +1,5 @@
+!.gitignore
+!.ignore
+!.cargo
+!.helix
+!.zed

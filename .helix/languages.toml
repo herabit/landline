@@ -1,0 +1,10 @@
+[language-server.tombi]
+command = "tombi"
+args = ["lsp", "--verbose"]
+
+[language-server.rust-analyzer.config]
+check.command = "clippy"
+
+[[language]]
+name = "toml"
+language-servers = [ "tombi" ]
