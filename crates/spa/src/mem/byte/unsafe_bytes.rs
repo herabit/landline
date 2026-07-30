@@ -83,14 +83,14 @@ impl PartialOrd for AccessKind {
 
         // NOTE: This value is only actually used if `self == ReadWrite`.
         let rw_case = {
-            let value = (*self as i8) - (*other as i8);
+            let value = (*self as i8).wrapping_sub(*other as i8);
 
             // NOTE: If we're actually dealing with a RW case, then
             //       this will be `0` if the rhs is RW, and `1` if
             //       it isn't.
             //
             //       If we're not in a RW case, this will have a junk value we discard.
-            (value >> 1) + (value & 0b01)
+            (value >> 1) ^ (value & 0b01)
         };
 
         todo!("implement for the `Read` and `Write` cases (optimally using the same code).")
