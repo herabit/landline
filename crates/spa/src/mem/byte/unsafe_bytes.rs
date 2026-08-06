@@ -43,59 +43,147 @@ impl AccessKind {
     }
 }
 
-impl PartialOrd for AccessKind {
-    #[inline(always)]
+// NOTE: We need to find some branchless function, `@`, that results in the following:
+//
+//       - (Read, Read)           => `1 @ 1 =>  0` # Eq
+//       - (Read, Write)          => `1 @ 2 =>  2` # None
+//       - (Read, ReadWrite)      => `1 @ 3 => -1` # Less
+//
+//       - (Write, Read)          => `2 @ 1 =>  2` # None
+//       - (Write, Write)         => `2 @ 2 =>  0` # Eq
+//       - (Write, ReadWrite)     => `2 @ 3 => -1` # Less
+//
+//       - (ReadWrite, Read)      => `3 @ 1 =>  1` # Greater
+//       - (ReadWrite, Write)     => `3 @ 2 =>  1` # Greater
+//       - (ReadWrite, ReadWrite) => `3 @ 3 =>  0` # Equal
+//
+//       Additionally, we're relying on the fact that `Option::<Ordering>::None`, when reinterpreted as
+//       a `i8`, has a bit representation of `2`. We will not, however, be transmuting a `i8, to an `Option<Ordering>`,
+//       so that in the event the representation changing, for whatever reason, we still get a valid value, rather
+//       than incurring undefined behavior.
+#[allow(dead_code)]
+impl AccessKind {
     #[unsafe(no_mangle)]
-    fn partial_cmp(
-        &self,
-        other: &Self,
-    ) -> Option<Ordering> {
-        // NOTE: We need to find some branchless function, `@`, that results in the following:
+    #[inline(always)]
+    #[allow(clippy::let_unit_value)]
+    #[allow(clippy::let_and_return)]
+    const unsafe fn _ord(
+        self,
+        rhs: AccessKind,
+    ) -> i8 {
+        // This operation, `lhs $ rhs`, has the following mapping:
         //
-        //       - (Read, Read)           => `1 @ 1 =>  0` # Eq
-        //       - (Read, Write)          => `1 @ 2 =>  2` # None
-        //       - (Read, ReadWrite)      => `1 @ 3 => -1` # Less
-        //
-        //       - (Write, Read)          => `2 @ 1 =>  2` # None
-        //       - (Write, Write)         => `2 @ 2 =>  0` # Eq
-        //       - (Write, ReadWrite)     => `2 @ 3 => -1` # Less
-        //
-        //       - (ReadWrite, Read)      => `3 @ 1 =>  1` # Greater
-        //       - (ReadWrite, Write)     => `3 @ 2 =>  1` # Greater
-        //       - (ReadWrite, ReadWrite) => `3 @ 3 =>  0` # Equal
-        //
-        //
-        //
-        // NOTE: We're relying on `Option::<Ordering>::None == 2` for optimal codegen...
-        //
-        //       Even if this, changes for some reason, this should still be faster in a loop.
-
-        // NOTE: This is just a cool hack for `x == AccessKind::ReadWrite` that
-        //       seems to optimize better.
-        let is_rw = |kind: AccessKind| match (kind as u8 - 1) >> 1 {
-            0 => false,
-            1 => true,
-            _ => unreachable!(),
-        };
-
-        // NOTE: Another hack that seems to optimize better.
-        let to_mask = |cond: bool| (cond as u8) * 0b11;
-
-        // NOTE: This value is only actually used if `self == ReadWrite`.
-        let rw_case = {
-            let value = (*self as i8).wrapping_sub(*other as i8);
-
-            // NOTE: If we're actually dealing with a RW case, then
-            //       this will be `0` if the rhs is RW, and `1` if
-            //       it isn't.
+        // - `Read $ Write      => None`    (`0b01 $ 0b10 => 0b10`)
+        // - `Write $ Read      => None`    (`0b10 $ 0b01 => 0b10`)
+        // - `Read $ ReadWrite  => Less`    (`0b01 $ 0b11 => 0b11`)
+        // - `Write $ ReadWrite => Less`    (`0b10 $ 0b11 => 0b11`)
+        // - `ReadWrite $ Read  => Greater` (`0b11 $ 0b01 => 0b01`)
+        // - `ReadWrite $ Write => Greater` (`0b11 $ 0b10 => 0b01`)
+        let ne_case = {
+            // NOTE: We treat `rhs` as an `i2`, and sign extend it, doing
+            //       the following mapping:
             //
-            //       If we're not in a RW case, this will have a junk value we discard.
-            (value >> 1) ^ (value & 0b01)
+            //       - `Read => 1`
+            //       - `Write => 2`
+            //       - `ReadWrite => -1`
+            let rhs_sign_ext = (rhs as i8 ^ 0b10).strict_sub(0b10);
+
+            // # We need these to be `None`
+            //
+            // (Read  + 2) ^ 0b1 = 2
+            // (Write + 1) ^ 0b1 = 2
+            //
+            // # We need these to be `Less`
+            //
+            // (Read  - 1) ^ 0b1 = 0
+            // (Write - 1) ^ 0b1 = 0
+            //
+            // # We need these to be `Greater`
+            //
+            // (ReadWrite + 1) ^ 0b1 = 4
+            // (ReadWrite + 2) ^ 0b1 = 4
+            //
+            // # These are the possible junk values.
+            //
+            // (Read      + 1) ^ 0b1 = 0
+            // (Write     + 2) ^ 0b1 = 4
+            // (ReadWrite - 1) ^ 0b1 = 2
+            //
+
+            let value = (self as i8).strict_add(rhs_sign_ext) ^ 0b1;
+
+            value
+
+            // match (self as i8).strict_add(rhs_sign_ext) {xx
+            //     0b011 => 0b10,
+            //     0b000 | 0b001 => 0b11,
+            //     0b100 | 0b101 => 0b10,
+            //     _ => unsafe { std::hint::unreachable_unchecked() },
+            // }
         };
 
-        todo!("implement for the `Read` and `Write` cases (optimally using the same code).")
+        return ne_case;
+
+        // // NOTE: This is `0b1111_1111` if `self == rhs`, otherwise it is `0b00`.
+        // let eq_case = !(self as i8 ^ rhs as i8);
+
+        todo!()
     }
 }
+
+// impl PartialOrd for AccessKind {
+//     #[inline(always)]
+//     #[unsafe(no_mangle)]
+//     fn partial_cmp(
+//         &self,
+//         other: &Self,
+//     ) -> Option<Ordering> {
+//         // NOTE: We need to find some branchless function, `@`, that results in the following:
+//         //
+//         //       - (Read, Read)           => `1 @ 1 =>  0` # Eq
+//         //       - (Read, Write)          => `1 @ 2 =>  2` # None
+//         //       - (Read, ReadWrite)      => `1 @ 3 => -1` # Less
+//         //
+//         //       - (Write, Read)          => `2 @ 1 =>  2` # None
+//         //       - (Write, Write)         => `2 @ 2 =>  0` # Eq
+//         //       - (Write, ReadWrite)     => `2 @ 3 => -1` # Less
+//         //
+//         //       - (ReadWrite, Read)      => `3 @ 1 =>  1` # Greater
+//         //       - (ReadWrite, Write)     => `3 @ 2 =>  1` # Greater
+//         //       - (ReadWrite, ReadWrite) => `3 @ 3 =>  0` # Equal
+//         //
+//         //
+//         //
+//         // NOTE: We're relying on `Option::<Ordering>::None == 2` for optimal codegen...
+//         //
+//         //       Even if this, changes for some reason, this should still be faster in a loop.
+
+//         // NOTE: This is just a cool hack for `x == AccessKind::ReadWrite` that
+//         //       seems to optimize better.
+//         let is_rw = |kind: AccessKind| match (kind as u8 - 1) >> 1 {
+//             0 => false,
+//             1 => true,
+//             _ => unreachable!(),
+//         };
+
+//         // NOTE: Another hack that seems to optimize better.
+//         let to_mask = |cond: bool| (cond as u8) * 0b11;
+
+//         // NOTE: This value is only actually used if `self == ReadWrite`.
+//         let rw_case = {
+//             let value = (*self as i8).wrapping_sub(*other as i8);
+
+//             // NOTE: If we're actually dealing with a RW case, then
+//             //       this will be `0` if the rhs is RW, and `1` if
+//             //       it isn't.
+//             //
+//             //       If we're not in a RW case, this will have a junk value we discard.
+//             (value >> 1) ^ (value & 0b01)
+//         };
+
+//         todo!("implement for the `Read` and `Write` cases (optimally using the same code).")
+//     }
+// }
 
 /// A marker trait indicating the access rights an [`UnsafeBytes`] has.
 #[allow(clippy::missing_safety_doc)]
