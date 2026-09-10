@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    mem::{AsBytes, AsBytesMut, Byte, as_bytes},
+    mem::{AsBytes, AsBytesMut, Byte},
     pod::{BasicPod, kind::SpaKind, sealed},
 };
 
@@ -38,21 +38,19 @@ impl PartialEq for SpaFraction {
         &self,
         other: &Self,
     ) -> bool {
-        let lhs = as_bytes(self)
-            .as_array::<8>()
-            .copied()
-            .map(Byte::into_u8_array)
-            .map(u64::from_ne_bytes)
-            .unwrap();
+        matches!(self.partial_cmp(other), Some(Ordering::Equal))
+    }
 
-        let rhs = as_bytes(other)
-            .as_array::<8>()
-            .copied()
-            .map(Byte::into_u8_array)
-            .map(u64::from_ne_bytes)
-            .unwrap();
-
-        lhs == rhs
+    #[inline(always)]
+    #[allow(clippy::partialeq_ne_impl)]
+    fn ne(
+        &self,
+        other: &Self,
+    ) -> bool {
+        matches!(
+            self.partial_cmp(other),
+            None | Some(Ordering::Greater) | Some(Ordering::Less)
+        )
     }
 }
 
