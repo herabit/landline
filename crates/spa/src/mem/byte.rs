@@ -24,6 +24,83 @@ use std::{
 #[repr(transparent)]
 pub struct Byte(MaybeUninit<u8>);
 
+impl Byte {
+    /// Create a new [`Byte`] from a `u8`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(byte: u8) -> Byte {
+        Byte(MaybeUninit::new(byte))
+    }
+
+    /// Get the underlying byte.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        // SAFETY: We know that the underlying byte is initialized.
+        unsafe { self.0.assume_init() }
+    }
+
+    /// Get a reference to the underlying byte.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_ref(&self) -> &u8 {
+        // SAFETY: We know that the underlying byte is initialized.
+        unsafe { self.0.assume_init_ref() }
+    }
+
+    /// Get a mutable reference to the underlying byte.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_mut(&mut self) -> &mut u8 {
+        // SAFETY: We know that the underlying byte is initialized.
+        unsafe { self.0.assume_init_mut() }
+    }
+
+    /// Cast a [`Byte`] array to a [`u8`] array.
+    #[inline(always)]
+    #[must_use]
+    pub const fn into_u8_array<const N: usize>(array: [Byte; N]) -> [u8; N] {
+        #[repr(C)]
+        union Cast<const N: usize> {
+            byte_array: [Byte; N],
+            u8_array: [u8; N],
+        }
+
+        // SAFETY: We know they have the same representation and we know `Byte` to be initialized properly.
+        unsafe { Cast::<N> { byte_array: array }.u8_array }
+    }
+
+    /// Cast a [`Byte`] slice into a [`u8`] slice.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_u8_slice(slice: &[Byte]) -> &[u8] {
+        // SAFETY: We know their layout to be equivalent, and `Byte` to be properly initialized.
+        unsafe { (&raw const *slice as *const [u8]).as_ref_unchecked() }
+    }
+
+    /// Cast a mutable [`Byte`] slice into a mutable [`u8`] slice.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_u8_slice_mut(slice: &mut [Byte]) -> &mut [u8] {
+        // SAFETY: We know their layout to be equivalent, and `Byte` to be properly initialized.
+        unsafe { (&raw mut *slice as *mut [u8]).as_mut_unchecked() }
+    }
+
+    /// Cast a [`Byte`] array reference to a [`u8`] array reference.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_u8_array<const N: usize>(array: &[Byte; N]) -> &[u8; N] {
+        Byte::as_u8_slice(array).as_array().unwrap()
+    }
+
+    /// Cast a mutable [`Byte`] array reference to a mutable [`u8`] array reference.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_u8_array_mut<const N: usize>(array: &mut [Byte; N]) -> &mut [u8; N] {
+        Byte::as_u8_slice_mut(array).as_mut_array().unwrap()
+    }
+}
+
 impl Clone for Byte {
     #[inline(always)]
     fn clone(&self) -> Self {
@@ -36,11 +113,49 @@ impl Copy for Byte {}
 unsafe impl AsBytes for Byte {}
 unsafe impl AsBytesMut for Byte {}
 
-// impl Byte {
-//     #[inline(always)]
-//     #[must_use]
-//     pub const fn from_
-// }
+impl AsRef<u8> for Byte {
+    #[inline(always)]
+    fn as_ref(&self) -> &u8 {
+        <Byte>::as_ref(self)
+    }
+}
+
+impl AsMut<u8> for Byte {
+    #[inline(always)]
+    fn as_mut(&mut self) -> &mut u8 {
+        <Byte>::as_mut(self)
+    }
+}
+
+impl Borrow<u8> for Byte {
+    #[inline(always)]
+    fn borrow(&self) -> &u8 {
+        self.as_ref()
+    }
+}
+
+impl BorrowMut<u8> for Byte {
+    #[inline(always)]
+    fn borrow_mut(&mut self) -> &mut u8 {
+        self.as_mut()
+    }
+}
+
+impl Default for Byte {
+    #[inline(always)]
+    fn default() -> Self {
+        Byte::new(0)
+    }
+}
+
+impl fmt::Debug for Byte {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        f.debug_tuple("Byte").field(self.as_ref()).finish()
+    }
+}
 
 /// Trait that indicates it is safe to reinterpret the memory at a `&Self` to a `&[Byte]`.
 ///
@@ -52,6 +167,7 @@ unsafe impl AsBytesMut for Byte {}
 ///   memory region for this type. So `Cell`, `UnsafeCell`, atomics, ETC. are disallowed unless there is some
 ///   layer of indirection through a pointer, roughly.
 /// - The type must not contain any uninitialized bytes.
+/// - The type must be inhabited (so no `!`).
 /// - Probably some other things, don't implement this yourself.
 pub unsafe trait AsBytes {}
 
@@ -63,6 +179,7 @@ pub unsafe trait AsBytes {}
 ///
 /// - The type must not contained uninitialized bytes.
 /// - It is safe to mutate the underlying memory without violating any invariants.
+/// - The type must be inhabited (so no `!`).
 /// - Probably other things, don't implement this yourself, you're gonna fuck it up.
 pub unsafe trait AsBytesMut {}
 

@@ -18,7 +18,7 @@ members = ["crates/spa"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.97.1"
+rust-version = "1.98.1"
 description = "Shitty pipewire library"
 homepage = "https://github.com/herabit/landline"
 repository = "https://github.com/herabit/landline"
@@ -63,6 +63,7 @@ tracing = {
 [workspace.lints.clippy]
 # This doesn't apply in all the cases it should... REEEEEEEEEEEEE
 inline_trait_bounds = "warn"
+mem_replace_with_default = "allow"
 # pedantic = "deny"
 
 [workspace.lints.rust]

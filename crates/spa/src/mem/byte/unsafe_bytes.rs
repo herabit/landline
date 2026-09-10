@@ -63,10 +63,10 @@ impl AccessKind {
 //       than incurring undefined behavior.
 #[allow(dead_code)]
 impl AccessKind {
-    #[unsafe(no_mangle)]
     #[inline(always)]
     #[allow(clippy::let_unit_value)]
     #[allow(clippy::let_and_return)]
+    #[allow(unused)]
     const unsafe fn _ord(
         self,
         rhs: AccessKind,
@@ -90,27 +90,21 @@ impl AccessKind {
 
             // # We need these to be `None`
             //
-            // (Read  + 2) ^ 0b1 = 2
-            // (Write + 1) ^ 0b1 = 2
+            // ((Read  + 2) ^ 0b001) - 0b011 = -1 0b1111_11_11
+            // ((Write + 1) ^ 0b001) - 0b011 = -1 0b1111_11_11
             //
             // # We need these to be `Less`
             //
-            // (Read  - 1) ^ 0b1 = 0
-            // (Write - 1) ^ 0b1 = 0
+            // ((Read  - 1) ^ 0b1) - 0b011 = -3 0b1111_11_01
+            // ((Write - 1) ^ 0b1) - 0b011 = -3 0b1111_11_01
             //
             // # We need these to be `Greater`
             //
-            // (ReadWrite + 1) ^ 0b1 = 4
-            // (ReadWrite + 2) ^ 0b1 = 4
-            //
-            // # These are the possible junk values.
-            //
-            // (Read      + 1) ^ 0b1 = 0
-            // (Write     + 2) ^ 0b1 = 4
-            // (ReadWrite - 1) ^ 0b1 = 2
-            //
+            // ((ReadWrite + 1) ^ 0b1) - 0b011 = 1 0b0000_00_01
+            // ((ReadWrite + 2) ^ 0b1) - 0b011 = 1 0b0000_00_01
+            let value = ((self as i8).strict_add(rhs_sign_ext) ^ 0b1).strict_sub(0b11);
 
-            let value = (self as i8).strict_add(rhs_sign_ext) ^ 0b1;
+            let overflow = (value >> 2) & 0b10;
 
             value
 

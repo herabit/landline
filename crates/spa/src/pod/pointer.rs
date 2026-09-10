@@ -1,0 +1,50 @@
+// NOTE: The size of pointers are always considered to be 16 bytes.
+
+use std::ffi::c_void;
+
+use crate::{
+    mem::{AsBytes, AsBytesMut, Byte},
+    pod::{BasicPod, kind::SpaKind, sealed},
+};
+
+/// A SPA Pointer.
+#[derive(Clone, Copy, Debug)]
+#[repr(C, packed)]
+pub struct SpaPointer {
+    /// The kind of this pointer.
+    pub kind: u32,
+    /// Inner padding bits (these must all be set to zero).
+    pub inner_padding: [Byte; 4],
+    /// The actual pointer value. The `const` says nothing about whether the underlying pointer
+    /// is actually immutable.
+    pub ptr: *const c_void,
+}
+
+impl Default for SpaPointer {
+    #[inline(always)]
+    fn default() -> Self {
+        SpaPointer::DEFAULT
+    }
+}
+
+unsafe impl AsBytes for SpaPointer {}
+unsafe impl AsBytesMut for SpaPointer {}
+
+impl sealed::BasicPod for SpaPointer {}
+
+const PADDING_SIZE: usize = cfg_select! {
+    target_pointer_width = "32" => 4,
+    target_pointer_width = "64" => 0,
+};
+
+unsafe impl BasicPod for SpaPointer {
+    type Padding = [Byte; PADDING_SIZE];
+
+    const DEFAULT: Self = SpaPointer {
+        kind: SpaKind::NONE,
+        inner_padding: [Byte::new(0); _],
+        ptr: std::ptr::null(),
+    };
+
+    const SPA_KIND: SpaKind = SpaKind::Pointer;
+}
