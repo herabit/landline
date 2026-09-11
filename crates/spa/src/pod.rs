@@ -291,12 +291,19 @@ mod choice;
 #[doc(inline)]
 pub use choice::*;
 
+mod slice;
+#[doc(inline)]
+pub use slice::*;
+
 mod sealed;
 
 /// An error that can occur when parsing a POD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum PodParseError {
+pub enum ParsePodError {
     /// There is insufficient space to parse the buffer.
     InsufficientSpace,
+
+    /// Some other, not yet named error.
+    Other,
 }

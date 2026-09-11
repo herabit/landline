@@ -1,6 +1,6 @@
 use std::{
     borrow::{Borrow, BorrowMut},
-    fmt, mem,
+    fmt,
     ops::{Deref, DerefMut},
 };
 
@@ -15,7 +15,7 @@ use crate::{
 ///
 /// Implementors must have an alignment of one, and have a size that is some multiple of four (including zero).
 pub unsafe trait PrimPad:
-    'static + Copy + AsBytes + AsBytesMut + Unpin + Default + fmt::Debug + sealed::PrimPad
+    'static + Copy + AsBytes + AsBytesMut + Unpin + Default + fmt::Debug + Send + Sync + sealed::PrimPad
 {
     /// A default value for this type.
     const DEFAULT: Self;
@@ -52,11 +52,8 @@ pub unsafe trait PrimPod:
     /// This is a default value for `Self`.
     const DEFAULT: Self;
 
-    /// A zero-initialized instance of `Padding`.
-    const PADDING: Self::Padding = {
-        // SAFETY: If something implements `AsBytesMut`, then we can safely fill it with zeroes, and it is inhabited.
-        unsafe { mem::zeroed() }
-    };
+    /// The default padding value.
+    const PADDING_DEFAULT: Self::Padding = <Self::Padding as PrimPad>::DEFAULT;
 
     /// The [`SpaKind`] for this type.
     const SPA_KIND: SpaKind;
@@ -78,7 +75,7 @@ pub unsafe trait PrimPod:
         size
     };
 
-    /// The expected size with paddings.
+    /// The expected size with padding.
     const STRIDE: u32 = {
         let stride = Self::SIZE.checked_next_multiple_of(8).expect(
             "all primitive PODs have a constant size which can be rounded up to a multiple of 8",
@@ -103,8 +100,22 @@ pub unsafe trait PrimPod:
             "the size of the padding must be zero or four",
         );
 
+        assert!(
+            matches!(
+                (Self::SIZE, padding_size),
+                | (0, 0) // Zero sized primitives are known.
+                | (4, 4) // u32-ish sized primitives are known.
+                | (8, 0) // u64-ish sized primitives are known.
+                | (16, 0) // u128-ish sized primitives are known.
+            ),
+            "we're not aware of this padding/size pair, and therefore the stride."
+        );
+
         stride
     };
+
+    /// The size of the padding.
+    const PADDING_SIZE: u32 = Self::STRIDE.strict_sub(Self::SIZE);
 }
 
 /// A primitive SPA POD without the header, but containing the padding.
@@ -130,7 +141,7 @@ where
 
     #[inline(always)]
     #[track_caller]
-    const fn ensure_layout() {
+    pub(crate) const fn ensure_layout() {
         const {
             assert!(
                 align_of::<P>() == 1,
@@ -146,7 +157,7 @@ where
         };
 
         // Run the checks in these constants.
-        let _ = const { (P::SIZE, P::STRIDE) };
+        let _ = const { (P::SIZE, P::PADDING_SIZE, P::STRIDE) };
     }
 
     /// Get a reference to the corresponding value and padding.
@@ -215,7 +226,7 @@ where
 
         PrimBody {
             value,
-            padding: P::PADDING,
+            padding: P::PADDING_DEFAULT,
         }
     }
 }
