@@ -1,7 +1,6 @@
 use std::{
     borrow::{Borrow, BorrowMut},
-    cmp::Ordering,
-    fmt, hash, hint,
+    fmt, hash,
     marker::PhantomData,
     mem::{self, ManuallyDrop},
     ops::{Deref, DerefMut},

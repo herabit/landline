@@ -1,2 +1,2 @@
-pub trait BasicPod {}
-pub trait BasicPad {}
+pub trait PrimPod {}
+pub trait PrimPad {}

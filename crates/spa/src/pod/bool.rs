@@ -2,7 +2,7 @@ use std::{borrow::Borrow, fmt, hash, hint::assert_unchecked, ops};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{BasicPod, kind::SpaKind, sealed},
+    pod::{PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA Boolean ***without the padding***.
@@ -71,9 +71,9 @@ impl SpaBool {
     }
 }
 
-impl sealed::BasicPod for SpaBool {}
+impl sealed::PrimPod for SpaBool {}
 
-unsafe impl BasicPod for SpaBool {
+unsafe impl PrimPod for SpaBool {
     type Padding = [Byte; 4];
 
     const DEFAULT: Self = SpaBool::FALSE;

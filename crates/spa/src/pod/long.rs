@@ -2,7 +2,7 @@ use std::{fmt, num::TryFromIntError};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{BasicPod, kind::SpaKind, sealed},
+    pod::{PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA 64-bit signed integer.
@@ -69,9 +69,9 @@ impl TryFrom<SpaLong> for isize {
     }
 }
 
-impl sealed::BasicPod for SpaLong {}
+impl sealed::PrimPod for SpaLong {}
 
-unsafe impl BasicPod for SpaLong {
+unsafe impl PrimPod for SpaLong {
     type Padding = [Byte; 0];
 
     const DEFAULT: Self = SpaLong(0);

@@ -4,7 +4,7 @@ use std::ffi::c_void;
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{BasicPod, kind::SpaKind, sealed},
+    pod::{PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA Pointer.
@@ -42,14 +42,14 @@ impl Default for SpaPointer {
 unsafe impl AsBytes for SpaPointer {}
 unsafe impl AsBytesMut for SpaPointer {}
 
-impl sealed::BasicPod for SpaPointer {}
+impl sealed::PrimPod for SpaPointer {}
 
 const PADDING_SIZE: usize = cfg_select! {
     target_pointer_width = "32" => 4,
     target_pointer_width = "64" => 0,
 };
 
-unsafe impl BasicPod for SpaPointer {
+unsafe impl PrimPod for SpaPointer {
     type Padding = [Byte; PADDING_SIZE];
 
     const DEFAULT: Self = SpaPointer {

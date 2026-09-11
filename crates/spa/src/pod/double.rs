@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{BasicPod, kind::SpaKind, sealed},
+    pod::{PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA 64-bit IEE-754 double precision floating point number.
@@ -44,9 +44,9 @@ impl fmt::Display for SpaDouble {
     }
 }
 
-impl sealed::BasicPod for SpaDouble {}
+impl sealed::PrimPod for SpaDouble {}
 
-unsafe impl BasicPod for SpaDouble {
+unsafe impl PrimPod for SpaDouble {
     type Padding = [Byte; 0];
 
     const DEFAULT: Self = SpaDouble(0.0);

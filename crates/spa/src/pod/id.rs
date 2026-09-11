@@ -2,7 +2,7 @@ use std::{fmt, num::TryFromIntError};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{BasicPod, kind::SpaKind, sealed},
+    pod::{PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA id ***without the padding***.
@@ -51,9 +51,9 @@ impl From<SpaId> for usize {
     }
 }
 
-impl sealed::BasicPod for SpaId {}
+impl sealed::PrimPod for SpaId {}
 
-unsafe impl BasicPod for SpaId {
+unsafe impl PrimPod for SpaId {
     type Padding = [Byte; 4];
 
     const DEFAULT: Self = SpaId(0);

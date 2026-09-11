@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{BasicPod, kind::SpaKind, sealed},
+    pod::{PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA Fraction.
@@ -227,9 +227,9 @@ impl TryFrom<SpaFraction> for [NonZero<u32>; 2] {
     }
 }
 
-impl sealed::BasicPod for SpaFraction {}
+impl sealed::PrimPod for SpaFraction {}
 
-unsafe impl BasicPod for SpaFraction {
+unsafe impl PrimPod for SpaFraction {
     type Padding = [Byte; 0];
 
     const DEFAULT: Self = SpaFraction { numer: 0, denom: 0 };

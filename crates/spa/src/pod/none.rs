@@ -4,7 +4,7 @@ use std::{convert::Infallible, ffi::c_void, fmt, hash, marker::PhantomData, mem}
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{BasicPod, kind::SpaKind, sealed},
+    pod::{PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA POD `None` value, which indicates the absence of something.
@@ -277,9 +277,9 @@ impl<T> From<SpaNone<T>> for Option<T> {
 const _: () = assert!(size_of::<SpaNone>() == 0);
 const _: () = assert!(align_of::<SpaNone>() == 1);
 
-impl<T> sealed::BasicPod for SpaNone<T> where T: ?Sized {}
+impl<T> sealed::PrimPod for SpaNone<T> where T: ?Sized {}
 
-unsafe impl<T> BasicPod for SpaNone<T>
+unsafe impl<T> PrimPod for SpaNone<T>
 where
     T: 'static + ?Sized,
 {

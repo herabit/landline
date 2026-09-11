@@ -1,12 +1,10 @@
 use std::{
     borrow::{Borrow, BorrowMut},
     cell::{Cell, UnsafeCell},
-    fmt, hash,
+    fmt,
     marker::PhantomData,
-    mem::{self, ManuallyDrop, MaybeUninit},
+    mem::{ManuallyDrop, MaybeUninit},
     num::{NonZero, Saturating, Wrapping},
-    ops::{Deref, DerefMut},
-    os::fd::{BorrowedFd, OwnedFd},
     ptr::NonNull,
     slice,
 };

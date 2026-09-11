@@ -14,7 +14,7 @@ use std::{
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{BasicPod, kind::SpaKind, sealed},
+    pod::{PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA file descriptor (that in some contexts is an index to a file descriptor). It is 64-bit, despite practically all
@@ -346,9 +346,9 @@ impl Default for SpaFd {
     }
 }
 
-impl sealed::BasicPod for SpaFd {}
+impl sealed::PrimPod for SpaFd {}
 
-unsafe impl BasicPod for SpaFd {
+unsafe impl PrimPod for SpaFd {
     type Padding = [Byte; 0];
 
     const DEFAULT: Self = SpaFd::INVALID;

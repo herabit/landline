@@ -177,7 +177,7 @@ impl SpaKind {
 }
 
 impl SpaKind {
-    /// Get the size of this SPA kind, if it is a known constant (a basic SPA).
+    /// Get the size of this SPA kind, if it is a known constant (a primitive SPA).
     #[inline(always)]
     #[must_use]
     pub const fn expected_size(self) -> Option<u32> {
@@ -199,10 +199,10 @@ impl SpaKind {
         }
     }
 
-    /// Returns whether this is a basic kind.
+    /// Returns whether this is a primitive kind.
     #[inline(always)]
     #[must_use]
-    pub const fn is_basic(self) -> bool {
+    pub const fn is_primitive(self) -> bool {
         self.expected_size().is_some()
     }
 

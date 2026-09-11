@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte, as_bytes},
-    pod::{BasicPod, kind::SpaKind, sealed},
+    pod::{PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA Rectangle.
@@ -176,9 +176,9 @@ impl Default for SpaRectangle {
     }
 }
 
-impl sealed::BasicPod for SpaRectangle {}
+impl sealed::PrimPod for SpaRectangle {}
 
-unsafe impl BasicPod for SpaRectangle {
+unsafe impl PrimPod for SpaRectangle {
     type Padding = [Byte; 0];
 
     const DEFAULT: Self = SpaRectangle {

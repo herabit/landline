@@ -2,7 +2,7 @@ use std::{fmt, num::TryFromIntError};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{BasicPod, kind::SpaKind, sealed},
+    pod::{PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA 32-bit signed integer.
@@ -61,8 +61,8 @@ impl From<SpaInt> for isize {
     }
 }
 
-impl sealed::BasicPod for SpaInt {}
-unsafe impl BasicPod for SpaInt {
+impl sealed::PrimPod for SpaInt {}
+unsafe impl PrimPod for SpaInt {
     type Padding = [Byte; 4];
 
     const DEFAULT: Self = SpaInt(0);

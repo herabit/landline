@@ -9,29 +9,29 @@ use crate::{
     pod::{kind::SpaKind, sealed},
 };
 
-/// A trait for the types that are supported as padding for [`BasicPod`]s.
+/// A trait for the types that are supported as padding for [`PrimPod`]s.
 ///
 /// # Safety
 ///
 /// Implementors must have an alignment of one, and have a size that is some multiple of four (including zero).
-pub unsafe trait BasicPad:
-    'static + Copy + AsBytes + AsBytesMut + Unpin + Default + fmt::Debug + sealed::BasicPad
+pub unsafe trait PrimPad:
+    'static + Copy + AsBytes + AsBytesMut + Unpin + Default + fmt::Debug + sealed::PrimPad
 {
     /// A default value for this type.
     const DEFAULT: Self;
 }
 
-impl sealed::BasicPad for [Byte; 0] {}
-impl sealed::BasicPad for [Byte; 4] {}
+impl sealed::PrimPad for [Byte; 0] {}
+impl sealed::PrimPad for [Byte; 4] {}
 
-unsafe impl<const N: usize> BasicPad for [Byte; N]
+unsafe impl<const N: usize> PrimPad for [Byte; N]
 where
-    [Byte; N]: sealed::BasicPad + Default,
+    [Byte; N]: sealed::PrimPad + Default,
 {
     const DEFAULT: Self = [Byte::new(0); N];
 }
 
-/// A trait for POD types that are considered basic. Basic PODs are those with a fixed size known at compile time,
+/// A trait for POD types that are considered primitive. Primitive PODs are those with a fixed size known at compile time,
 /// and a fixed stride, among other things.
 ///
 /// # Safety
@@ -39,15 +39,15 @@ where
 /// All POD types must have an alignment of `1`.
 ///
 /// Likely some other stuff that needs to be hashed out.
-pub unsafe trait BasicPod:
-    'static + Copy + AsBytes + AsBytesMut + Unpin + Default + fmt::Debug + sealed::BasicPod
+pub unsafe trait PrimPod:
+    'static + Copy + AsBytes + AsBytesMut + Unpin + Default + fmt::Debug + sealed::PrimPod
 {
     /// The tail padding for this type.
     ///
     /// # Safety
     ///
     /// This must have an alignment of `1`.
-    type Padding: BasicPad;
+    type Padding: PrimPad;
 
     /// This is a default value for `Self`.
     const DEFAULT: Self;
@@ -68,7 +68,7 @@ pub unsafe trait BasicPod:
     const SIZE: u32 = {
         let size = Self::SPA_KIND
             .expected_size()
-            .expect("all basic PODs have a constant size");
+            .expect("all primitive PODs have a constant size");
 
         assert!(
             size as usize == size_of::<Self>(),
@@ -81,12 +81,12 @@ pub unsafe trait BasicPod:
     /// The expected size with paddings.
     const STRIDE: u32 = {
         let stride = Self::SIZE.checked_next_multiple_of(8).expect(
-            "all basic PODs have a constant size which can be rounded up to a multiple of 8",
+            "all primitive PODs have a constant size which can be rounded up to a multiple of 8",
         );
 
         assert!(
-            size_of::<BasicBody<Self>>() == stride as usize,
-            "the stride must be equal to the size of `BasicBody<Self>`"
+            size_of::<PrimBody<Self>>() == stride as usize,
+            "the stride must be equal to the size of `PrimBody<Self>`"
         );
 
         assert!(stride % 8 == 0, "the stride must be divisible by eight");
@@ -107,13 +107,13 @@ pub unsafe trait BasicPod:
     };
 }
 
-/// A basic SPA POD without the header.
+/// A primitive SPA POD without the header, but containing the padding.
 ///
-/// This is is used in as the body for basic PODs of `P`, or as the elements in an array of `P`.
+/// This is is used in as the body for primitive PODs of `P`, or as the elements in an array of `P`.
 #[repr(C, packed)]
-pub struct BasicBody<P>
+pub struct PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
     /// The actual value of the body.
     pub value: P,
@@ -121,22 +121,27 @@ where
     pub padding: P::Padding,
 }
 
-impl<P> BasicBody<P>
+impl<P> PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
-    /// A default `BasicBody`, containing the default value for `P` and the default padding.
-    pub const DEFAULT: BasicBody<P> = BasicBody::new(P::DEFAULT);
+    /// A default [`PrimBody`], containing the default value for `P` and the default padding.
+    pub const DEFAULT: PrimBody<P> = PrimBody::new(P::DEFAULT);
 
     #[inline(always)]
     #[track_caller]
     const fn ensure_layout() {
-        const { assert!(align_of::<P>() == 1, "basic pods are always 1-byte aligned") };
+        const {
+            assert!(
+                align_of::<P>() == 1,
+                "primitive pods are always 1-byte aligned"
+            )
+        };
 
         const {
             assert!(
                 align_of::<P::Padding>() == 1,
-                "basic pod paddings are always 1-byte aligned"
+                "primitive pod paddings are always 1-byte aligned"
             )
         };
 
@@ -202,22 +207,22 @@ where
         self.split_mut().1
     }
 
-    /// Create a new [`BasicBody`] given some value.
+    /// Create a new [`PrimBody`] given some value.
     #[inline(always)]
     #[must_use]
-    pub const fn new(value: P) -> BasicBody<P> {
+    pub const fn new(value: P) -> PrimBody<P> {
         Self::ensure_layout();
 
-        BasicBody {
+        PrimBody {
             value,
             padding: P::PADDING,
         }
     }
 }
 
-impl<P> Clone for BasicBody<P>
+impl<P> Clone for PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
     #[inline(always)]
     fn clone(&self) -> Self {
@@ -225,11 +230,11 @@ where
     }
 }
 
-impl<P> Copy for BasicBody<P> where P: BasicPod {}
+impl<P> Copy for PrimBody<P> where P: PrimPod {}
 
-impl<P> Default for BasicBody<P>
+impl<P> Default for PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
     #[inline(always)]
     fn default() -> Self {
@@ -237,9 +242,9 @@ where
     }
 }
 
-impl<P> fmt::Debug for BasicBody<P>
+impl<P> fmt::Debug for PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
     fn fmt(
         &self,
@@ -247,16 +252,16 @@ where
     ) -> fmt::Result {
         let (value, padding) = self.split();
 
-        f.debug_struct("BasicBody")
+        f.debug_struct("PrimBody")
             .field("value", value)
             .field("padding", padding)
             .finish()
     }
 }
 
-impl<P> AsRef<P> for BasicBody<P>
+impl<P> AsRef<P> for PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
     #[inline(always)]
     fn as_ref(&self) -> &P {
@@ -264,9 +269,9 @@ where
     }
 }
 
-impl<P> AsMut<P> for BasicBody<P>
+impl<P> AsMut<P> for PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
     #[inline(always)]
     fn as_mut(&mut self) -> &mut P {
@@ -274,9 +279,9 @@ where
     }
 }
 
-impl<P> Borrow<P> for BasicBody<P>
+impl<P> Borrow<P> for PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
     #[inline(always)]
     fn borrow(&self) -> &P {
@@ -284,9 +289,9 @@ where
     }
 }
 
-impl<P> BorrowMut<P> for BasicBody<P>
+impl<P> BorrowMut<P> for PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
     #[inline(always)]
     fn borrow_mut(&mut self) -> &mut P {
@@ -294,9 +299,9 @@ where
     }
 }
 
-impl<P> Deref for BasicBody<P>
+impl<P> Deref for PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
     type Target = P;
 
@@ -306,9 +311,9 @@ where
     }
 }
 
-impl<P> DerefMut for BasicBody<P>
+impl<P> DerefMut for PrimBody<P>
 where
-    P: BasicPod,
+    P: PrimPod,
 {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
@@ -316,8 +321,8 @@ where
     }
 }
 
-// SAFETY: We know that `BasicBody` contains no padding and that its component parts
+// SAFETY: We know that `PrimBody` contains no padding and that its component parts
 //         are `AsBytes + AsBytesMut`.
 
-unsafe impl<P> AsBytes for BasicBody<P> where P: BasicPod {}
-unsafe impl<P> AsBytesMut for BasicBody<P> where P: BasicPod {}
+unsafe impl<P> AsBytes for PrimBody<P> where P: PrimPod {}
+unsafe impl<P> AsBytesMut for PrimBody<P> where P: PrimPod {}

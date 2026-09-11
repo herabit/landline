@@ -47,7 +47,7 @@ impl SpaHeader {
     pub const NONE: SpaHeader = SpaHeader::from_spa_kind(SpaKind::None).unwrap();
 
     /// Create a [`SpaHeader`] for a given [`SpaKind`], given
-    /// it's a basic [`SpaKind`].
+    /// it's a primitive [`SpaKind`].
     #[inline(always)]
     #[must_use]
     pub const fn from_spa_kind(spa_kind: SpaKind) -> Option<SpaHeader> {
@@ -211,9 +211,9 @@ impl fmt::Debug for SpaHeader {
 
 pub mod kind;
 
-mod basic;
+mod primitive;
 #[doc(inline)]
-pub use basic::*;
+pub use primitive::*;
 
 mod none;
 #[doc(inline)]
@@ -292,3 +292,11 @@ mod choice;
 pub use choice::*;
 
 mod sealed;
+
+/// An error that can occur when parsing a POD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PodParseError {
+    /// There is insufficient space to parse the buffer.
+    InsufficientSpace,
+}
