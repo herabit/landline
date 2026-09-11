@@ -1,19 +1,20 @@
+//! Types and tools for handling the raw representation of SPA PODs.
+//!
+//! Validation within this module is done lazily, and consumers are expected to validate payloads
+//! themselves, usually using the tools provided within this crate.
+//!
+//! As for deserialization, we try to avoid copying. Parsing with this module is pull-based,
+//! and copying should only ever be incurred by consumers, not us.
+//!
+//! As such, this module is considered low-level. It just helps to avoid needless allocations and implicit
+//! recursion elsewhere.
+
 use std::fmt;
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
     pod::kind::SpaKind,
 };
-
-// pub unsafe trait BasicSpa: Sized + AsBytes {
-//     /// The kind of SPA this is.
-//     const KIND: SpaKind;
-
-//     /// The size of this SPA without padding
-//     const SIZE: u32 = Self::KIND
-//         .known_size()
-//         .expect("all basic types have a known unpadded size");
-// }
 
 /// A header that is at the start of every SPA POD, storing the size of the payload,
 /// and what kind of POD it is.
@@ -98,6 +99,12 @@ impl SpaHeader {
         }
     }
 
+    /// Parse a [`SpaHeader`] given a slice of bytes, returning a tuple of the header
+    /// and remaining bytes.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] if there's too little space in `bytes`.
     #[inline(always)]
     #[must_use]
     pub const fn split_bytes(bytes: &[Byte]) -> Option<(&SpaHeader, &[Byte])> {
@@ -118,6 +125,11 @@ impl SpaHeader {
         }
     }
 
+    /// Parse a [`SpaHeader`] given a slice of bytes.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] if there's too little space in `bytes`.
     #[inline(always)]
     #[must_use]
     pub const fn from_bytes(bytes: &[Byte]) -> Option<&SpaHeader> {
@@ -127,6 +139,12 @@ impl SpaHeader {
         }
     }
 
+    /// Parse a [`SpaHeader`] given a mutable slice of bytes, returning a tuple of the header
+    /// and remaining bytes.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] if there's too little space in `bytes`.
     #[inline(always)]
     #[must_use]
     pub const fn split_bytes_mut(bytes: &mut [Byte]) -> Option<(&mut SpaHeader, &mut [Byte])> {
@@ -145,6 +163,11 @@ impl SpaHeader {
         }
     }
 
+    /// Parse a [`SpaHeader`] given a mutable slice of bytes.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] if there's too little space in `bytes`.
     #[inline(always)]
     #[must_use]
     pub const fn from_bytes_mut(bytes: &mut [Byte]) -> Option<&mut SpaHeader> {

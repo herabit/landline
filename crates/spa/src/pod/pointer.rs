@@ -17,7 +17,19 @@ pub struct SpaPointer {
     pub inner_padding: [Byte; 4],
     /// The actual pointer value. The `const` says nothing about whether the underlying pointer
     /// is actually immutable.
-    pub ptr: *const c_void,
+    ///
+    /// Additionally this may be null.
+    pub data: *const c_void,
+}
+
+impl SpaPointer {
+    /// Get the [`SpaKind`] for what this pointer allegedly points to, given
+    /// it's valid.
+    #[inline(always)]
+    #[must_use]
+    pub const fn spa_kind(&self) -> Option<SpaKind> {
+        SpaKind::from_u32(self.kind)
+    }
 }
 
 impl Default for SpaPointer {
@@ -43,7 +55,7 @@ unsafe impl BasicPod for SpaPointer {
     const DEFAULT: Self = SpaPointer {
         kind: SpaKind::NONE,
         inner_padding: [Byte::new(0); _],
-        ptr: std::ptr::null(),
+        data: std::ptr::null(),
     };
 
     const SPA_KIND: SpaKind = SpaKind::Pointer;
