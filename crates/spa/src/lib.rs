@@ -9,10 +9,10 @@ const _: () = {
         all(
             target_os = "linux",
             any(target_pointer_width = "32", target_pointer_width = "64"),
-        ) => {}
+        ) => {},
         _ => {
             compiler_error!("we only support 32-bit and 64-bit linux currently");
-        }
+        },
     }
 };
 

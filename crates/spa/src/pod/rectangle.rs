@@ -1,5 +1,5 @@
 use std::{
-    hash,
+    hash, hint,
     num::{NonZero, TryFromIntError},
 };
 
@@ -16,6 +16,40 @@ pub struct SpaRectangle {
     pub width: u32,
     /// The height of the rectangle.
     pub height: u32,
+}
+
+impl SpaRectangle {
+    /// Calculates the area of this rectangle.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] upon overflow, or if the area is zero.
+    #[inline(always)]
+    #[must_use]
+    pub const fn area(self) -> Option<NonZero<u32>> {
+        match self.width.checked_mul(self.height) {
+            Some(area @ 1..) => Some(NonZero::new(area).unwrap()),
+            None | Some(0) => {
+                hint::cold_path();
+                None
+            },
+        }
+    }
+
+    /// Returns whether this rectangle is a square.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`false`] if `lhs == 0 || rhs == 0 || lhs != rhs`.
+    ///
+    /// Note that this does *not* validate whether or not the area of this
+    /// rectangle will fit within a [`u32`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_square(self) -> bool {
+        // NOTE: We add redundant checks because it doesn't really matter.
+        self.width == self.height && self.width != 0 && self.height != 0
+    }
 }
 
 impl PartialEq for SpaRectangle {

@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    hash,
+    hint,
     num::{NonZero, TryFromIntError},
 };
 
@@ -24,8 +24,163 @@ impl SpaFraction {
     #[inline(always)]
     #[must_use]
     pub const fn checked_div_rem(self) -> Option<(u32, u32)> {
-        if let Some(denom) = NonZero::new(self.denom) {
-            Some((self.numer / denom.get(), self.numer % denom.get()))
+        match (
+            self.numer.checked_div(self.denom),
+            self.numer.checked_rem(self.denom),
+        ) {
+            (Some(div), Some(rem @ 0)) => {
+                // SAFETY: If the remainder is zero, then we know `numer` is exactly divisible by `denom`.
+                unsafe { hint::assert_unchecked(div.unchecked_mul(self.denom) == self.numer) };
+                Some((div, rem))
+            },
+            (Some(div), Some(rem @ 1..)) => Some((div, rem)),
+            (None, None) => {
+                hint::cold_path();
+                None
+            },
+            (None, Some(_)) | (Some(_), None) => unreachable!(),
+        }
+        // match NonZero::new(self.denom) {
+        //     Some(denom) => Some((self.numer / denom.get(), self.numer % denom.get())),
+        //     None => None,
+        // }
+    }
+
+    /// Returns whether this fraction is defined. A fraction is considered undefined
+    /// if its denominator is zero.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_defined(self) -> bool {
+        self.denom != 0
+    }
+
+    /// Returns whether this fraction is representable as an integer.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_integer(self) -> bool {
+        matches!(self.checked_div_rem(), Some((_, 0)))
+    }
+
+    /// Returns whether this fraction is equivalent to the specified [`u32`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn eq_u32(
+        self,
+        value: u32,
+    ) -> bool {
+        self.is_defined() && (self.denom as u64).strict_mul(value as u64) == self.numer as u64
+    }
+
+    /// Returns this fraction as a [`u32`], if it can be represented as one losslessly.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] if `denom == 0 || numer % denom != 0`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn to_u32(self) -> Option<u32> {
+        match self.checked_div_rem() {
+            Some((int_part, 0)) => Some(int_part),
+            None | Some((_, 1..)) => {
+                hint::cold_path();
+
+                None
+            },
+        }
+    }
+
+    /// Rounds this fraction towards zero, returning the integer part
+    /// of it.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] if `denom == 0`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn trunc(self) -> Option<SpaFraction> {
+        match self.checked_div_rem() {
+            Some((int_part, _rem)) => Some(SpaFraction {
+                numer: int_part,
+                denom: 1,
+            }),
+            None => None,
+        }
+    }
+
+    /// Returns the fractional part of this fraction, where the corollary form of
+    /// division rounds towards zero. `self.trunc() + self.fract() == self` is true.
+    #[inline(always)]
+    #[must_use]
+    pub const fn fract(self) -> Option<SpaFraction> {
+        match self.checked_div_rem() {
+            Some((_int_part, rem)) => Some(SpaFraction {
+                numer: rem,
+                denom: self.denom,
+            }),
+            None => None,
+        }
+    }
+
+    /// Rounds this fraction towards negative infinity. Since our fractions
+    /// are unsigned, this is equivalent to [`SpaFraction::trunc`].
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] if `denom == 0`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn floor(self) -> Option<SpaFraction> {
+        self.trunc()
+    }
+
+    /// Rounds this fraction towards positive infinity.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] if `denom == 0`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn ceil(self) -> Option<SpaFraction> {
+        match self.checked_div_rem() {
+            Some((int_part, 0)) => Some(SpaFraction {
+                numer: int_part,
+                denom: 1,
+            }),
+            Some((int_part, 1..)) => Some(SpaFraction {
+                // SAFETY: The existence of a remainder at all implies it is sound to increment
+                //         by up to and including, the remainder. We're only incrementing by one,
+                //         and the remainder is at least one, thus this is sound.
+                numer: unsafe { int_part.unchecked_add(1) },
+                denom: 1,
+            }),
+            None => None,
+        }
+    }
+
+    /// Flips the numerator and denominator.
+    #[inline(always)]
+    #[must_use]
+    pub const fn flip(self) -> SpaFraction {
+        SpaFraction {
+            numer: self.denom,
+            denom: self.numer,
+        }
+    }
+
+    /// Returns the reciprocal of this fraction.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] if this fraction is equal to zero, or undefined. In other words,
+    /// this will only return [`Some`] if `numer != 0 && denom != 0`.
+    ///
+    /// If you want to flip the numerator and denominator without regard of the validity,
+    /// use [`SpaFraction::flip`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn recip(self) -> Option<SpaFraction> {
+        if self.numer != 0 && self.denom != 0 {
+            Some(self.flip())
         } else {
             None
         }
@@ -95,18 +250,20 @@ impl PartialOrd for SpaFraction {
     }
 }
 
-impl hash::Hash for SpaFraction {
-    #[inline(always)]
-    fn hash<H>(
-        &self,
-        state: &mut H,
-    ) where
-        H: hash::Hasher,
-    {
-        { self.numer }.hash(state);
-        { self.denom }.hash(state);
-    }
-}
+// TODO: Fix the hash implementation. Until then, no hashing!
+
+// impl hash::Hash for SpaFraction {
+//     #[inline(always)]
+//     fn hash<H>(
+//         &self,
+//         state: &mut H,
+//     ) where
+//         H: hash::Hasher,
+//     {
+//         { self.numer }.hash(state);
+//         { self.denom }.hash(state);
+//     }
+// }
 
 impl Default for SpaFraction {
     #[inline(always)]

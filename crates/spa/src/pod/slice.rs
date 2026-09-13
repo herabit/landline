@@ -1,8 +1,8 @@
-use std::{hint, marker::PhantomData, ptr::NonNull};
+use std::{array, borrow::Borrow, fmt, hint, marker::PhantomData, ops::Index, ptr::NonNull};
 
 use crate::{
-    mem::Byte,
-    pod::{ParsePodError, PrimBody, PrimPod},
+    mem::{Byte, as_bytes},
+    pod::{ParsePodError, PrimBody, PrimPod, SpaHeader, kind::SpaKind},
 };
 
 /// # Safety
@@ -91,7 +91,7 @@ const fn checked_div_exact(
         None | Some(1..) => {
             hint::cold_path();
             None
-        }
+        },
     }
 }
 
@@ -137,7 +137,7 @@ where
             // SAFETY: This is always `0` for types that don't need padding, and for those
             //         that do, it makes the stride divide exactly by `8`.
             //
-            //         See `RawSlice::decode` for details.
+            //         See `RawSlice::parse` for details.
             let padding_size = unsafe { (len % 2).unchecked_mul(P::PADDING_SIZE) };
 
             (slice_size, padding_size)
@@ -213,7 +213,7 @@ where
                 //          we pad to multiples of eight, we know that `padding` is only
                 //          ever `0` or `1`.
                 //
-                //          See `RawSlice::decode` for more info.
+                //          See `RawSlice::parse` for more info.
                 unsafe {
                     hint::assert_unchecked(unchecked_div_exact(padding, P::PADDING_SIZE) <= 1)
                 };
@@ -271,7 +271,58 @@ where
         NonNull::slice_from_raw_parts(self.data.cast::<Byte>(), stride as usize)
     }
 
-    /// Decode a raw primitive slice from the start of the elements,
+    /// Decode a raw primitive slice from the start of its header.
+    ///
+    /// # Safety
+    ///
+    /// The caller has to ensure a lot of things, I'm just too lazy to write them out
+    /// at present.
+    #[inline(always)]
+    const unsafe fn decode(
+        bytes: NonNull<[Byte]>
+    ) -> Result<(RawSlice<P>, NonNull<[Byte]>), ParsePodError> {
+        const { Self::ASSERT };
+
+        // SAFETY: The caller ensures this is sound.
+        let Some((headers, bytes)) = (unsafe { split_at(bytes, size_of::<[SpaHeader; 2]>()) })
+        else {
+            hint::cold_path();
+            return Err(ParsePodError::InsufficientSpace);
+        };
+
+        // SAFETY: The caller ensures it's sound to treat the first 16 bytes as headers.
+        let [pod_header, array_header] = unsafe { headers.cast::<[SpaHeader; 2]>().as_ref() };
+
+        if P::SIZE == 0 {
+            // NOTE: We're just going to error on arrays of zero sized types. They don't make sense within the context of
+            //       pipewire, and yeah... Fuck it.
+            Err(ParsePodError::Other)
+        } else if pod_header.kind != SpaKind::ARRAY
+            || array_header.kind != P::KIND
+            || array_header.size != P::SIZE
+        {
+            // NOTE: We're confirming that we're actually parsing an array for our type, and that the child
+            //       size matches what we expect. If it doesn't, then it's not expected.
+            hint::cold_path();
+            Err(ParsePodError::UnexpectedValue)
+        } else if pod_header.size < (size_of::<SpaHeader>() as u32) {
+            // NOTE: We somehow don't have enough room for the array's header.
+            hint::cold_path();
+            Err(ParsePodError::InsufficientSpace)
+        } else if let array_size = pod_header.size.strict_sub(size_of::<SpaHeader>() as u32)
+            && let Some(len) = checked_div_exact(array_size, P::SIZE)
+        {
+            // NOTE: Success!!!
+            // SAFETY: The caller ensures this is fine and we just did a bunch of checks.
+            unsafe { RawSlice::<P>::parse(bytes, len) }
+        } else {
+            // NOTE: AGH! Fuck more errors.
+            hint::cold_path();
+            Err(ParsePodError::InsufficientSpace)
+        }
+    }
+
+    /// Parse a raw primitive slice from the start of the elements,
     /// and the amount of elements.
     ///
     /// # Safety
@@ -279,13 +330,14 @@ where
     /// The caller must ensure a bunch of things, but the one of priority
     /// is that `bytes` is *actually a valid allocation*.
     #[inline(always)]
-    const unsafe fn decode(
+    const unsafe fn parse(
         bytes: NonNull<[Byte]>,
         len: u32,
     ) -> Result<(RawSlice<P>, NonNull<[Byte]>), ParsePodError> {
         const { Self::ASSERT };
 
         let Some(size) = len.checked_mul(P::SIZE) else {
+            hint::cold_path();
             return Err(ParsePodError::InsufficientSpace);
         };
 
@@ -306,6 +358,7 @@ where
         let padding_size = (len % 2) * P::PADDING_SIZE;
 
         let Some(stride) = size.checked_add(padding_size) else {
+            hint::cold_path();
             return Err(ParsePodError::InsufficientSpace);
         };
 
@@ -315,6 +368,7 @@ where
 
         // SAFETY: The caller ensures that `bytes` is a valid allocation.
         let Some((this, rest)) = (unsafe { split_at(bytes, stride as usize) }) else {
+            hint::cold_path();
             return Err(ParsePodError::InsufficientSpace);
         };
 
@@ -363,15 +417,15 @@ impl<'a, P> PrimSlice<'a, P>
 where
     P: PrimPod,
 {
-    /// Decode a primitive slice from the start of the elements, and the amount of elements.
+    /// Parse a primitive slice given a buffer and the amount of elements.
     #[inline(always)]
     #[allow(unused_unsafe)]
-    pub const fn decode(
+    pub const fn parse(
         bytes: &'a [Byte],
         len: u32,
     ) -> Result<(PrimSlice<'a, P>, &'a [Byte]), ParsePodError> {
         // SAFETY: We know an immutable slice is a valid allocation.
-        match unsafe { RawSlice::decode(NonNull::from_ref(bytes), len) } {
+        match unsafe { RawSlice::parse(NonNull::from_ref(bytes), len) } {
             Ok((slice, rest)) => {
                 // SAFETY: We know `slice` to be derived from `bytes`.
                 let slice: PrimSlice<'a, P> = unsafe {
@@ -386,8 +440,20 @@ where
                 let rest: &'a [Byte] = unsafe { rest.as_ref() };
 
                 Ok((slice, rest))
-            }
+            },
             Err(err) => Err(err),
+        }
+    }
+
+    /// Create an empty [`PrimSlice`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn empty() -> PrimSlice<'a, P> {
+        const {
+            match PrimSlice::parse(&[], 0) {
+                Ok((slice, _)) => slice,
+                Err(_) => unreachable!(),
+            }
         }
     }
 
@@ -448,7 +514,7 @@ where
     /// Get a reference to the underlying primitive slice.
     #[inline(always)]
     #[must_use]
-    pub const fn as_ref(&self) -> &'a [P] {
+    pub const fn prims(&self) -> &'a [P] {
         self.split().0
     }
 
@@ -476,20 +542,164 @@ where
 
 impl<'a, P> Copy for PrimSlice<'a, P> where P: PrimPod {}
 
-// SAFETY: A `PrimSlice` is functionally a tuple over `&'a [P]` and `Option<&'a P::Padding>`.
+// SAFETY: Since this is functionally a `(&'a [P], Option<&'a P::Padding>)`,
+//         we follow the rules of references. References are only safe to send
+//         to another thread if their referent is `Sync`. So, since we're covariant
+//         over `&'a [P]` and `&'a P::Padding`, and transitively `P` and `P::Padding`,
+//         we can implement `Send` when both `P` and `P::Padding` are `Sync`.
 unsafe impl<'a, P> Send for PrimSlice<'a, P>
 where
     P: PrimPod,
-    &'a [P]: Send,
-    Option<&'a P::Padding>: Send,
+    P: Sync,
+    P::Padding: Sync,
 {
 }
 
-// SAFETY: A `PrimSlice` is functionally a tuple over `&'a [P]` and `Option<&'a P::Padding>`.
+// SAFETY: Since this is functionally a `(&'a [P], Option<&'a P::Padding>)`,
+//         we follow the rules of references. References are only `Sync` if their
+//         referent is `Sync`. Thus, since we're covariant over `&'a [P]`
+//         and `Option<&'a P::Padding>`, and transitively `P` and `P::Padding`,
+//         we can implement `Sync` when both `P` and `P::Padding` are `Sync`.
 unsafe impl<'a, P> Sync for PrimSlice<'a, P>
 where
     P: PrimPod,
-    &'a [P]: Sync,
-    Option<&'a P::Padding>: Sync,
+    P: Sync,
+    P::Padding: Sync,
 {
+}
+
+impl<'a, P> fmt::Debug for PrimSlice<'a, P>
+where
+    P: fmt::Debug + PrimPod,
+    P::Padding: fmt::Debug,
+{
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        let (slice, padding) = self.split();
+        f.debug_struct("PrimSlice")
+            .field("slice", &slice)
+            .field("padding", &padding)
+            .finish()
+    }
+}
+
+impl<'a, P> Default for PrimSlice<'a, P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn default() -> Self {
+        PrimSlice::empty()
+    }
+}
+
+impl<'a, P> AsRef<[P]> for PrimSlice<'a, P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn as_ref(&self) -> &[P] {
+        self.prims()
+    }
+}
+
+impl<'a, P> Borrow<[P]> for PrimSlice<'a, P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn borrow(&self) -> &[P] {
+        self.prims()
+    }
+}
+
+impl<'a, P, I> Index<I> for PrimSlice<'a, P>
+where
+    P: PrimPod,
+    [P]: Index<I>,
+{
+    type Output = <[P] as Index<I>>::Output;
+
+    #[inline(always)]
+    fn index(
+        &self,
+        index: I,
+    ) -> &Self::Output {
+        self.prims().index(index)
+    }
+}
+
+impl<'a, P> From<PrimSlice<'a, P>> for &'a [P]
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn from(value: PrimSlice<'a, P>) -> Self {
+        value.prims()
+    }
+}
+
+impl<'a, P> From<PrimSlice<'a, P>> for (&'a [P], Option<&'a P::Padding>)
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn from(value: PrimSlice<'a, P>) -> Self {
+        value.split()
+    }
+}
+
+impl<'a, P, const N: usize> TryFrom<PrimSlice<'a, P>> for &'a [P; N]
+where
+    P: PrimPod,
+{
+    type Error = array::TryFromSliceError;
+
+    #[inline(always)]
+    fn try_from(value: PrimSlice<'a, P>) -> Result<Self, Self::Error> {
+        value.prims().try_into()
+    }
+}
+
+impl<'a, P, const N: usize> TryFrom<PrimSlice<'a, P>> for (&'a [P; N], Option<&'a P::Padding>)
+where
+    P: PrimPod,
+{
+    type Error = array::TryFromSliceError;
+
+    #[inline(always)]
+    fn try_from(value: PrimSlice<'a, P>) -> Result<Self, Self::Error> {
+        let (slice, padding) = value.split();
+
+        slice.try_into().map(|array| (array, padding))
+    }
+}
+
+impl<'a, P> TryFrom<&'a [P]> for PrimSlice<'a, P>
+where
+    P: PrimPod,
+{
+    type Error = ParsePodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a [P]) -> Result<Self, Self::Error> {
+        match u32::try_from(value.len()) {
+            Ok(len) => PrimSlice::parse(as_bytes(value), len).map(|(slice, _)| slice),
+            Err(_) => Err(ParsePodError::InsufficientSpace),
+        }
+    }
+}
+
+impl<'a, P, const N: usize> TryFrom<&'a [P; N]> for PrimSlice<'a, P>
+where
+    P: PrimPod,
+{
+    type Error = ParsePodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a [P; N]) -> Result<Self, Self::Error> {
+        value.as_slice().try_into()
+    }
 }

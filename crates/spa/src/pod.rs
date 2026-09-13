@@ -263,9 +263,9 @@ mod bitmap;
 #[doc(inline)]
 pub use bitmap::*;
 
-mod array;
-#[doc(inline)]
-pub use array::*;
+// mod array;
+// #[doc(inline)]
+// pub use array::*;
 
 mod r#struct;
 #[doc(inline)]
@@ -303,6 +303,9 @@ mod sealed;
 pub enum ParsePodError {
     /// There is insufficient space to parse the buffer.
     InsufficientSpace,
+
+    /// We encountered an unexpected value.
+    UnexpectedValue,
 
     /// Some other, not yet named error.
     Other,
