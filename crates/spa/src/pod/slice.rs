@@ -1316,3 +1316,40 @@ where
         self.prims_mut().into_iter()
     }
 }
+
+#[test]
+fn test_fuck_me() {
+    #[repr(C, packed)]
+    struct Packet {
+        pod_header: SpaHeader,
+        array_header: SpaHeader,
+        data: [super::SpaInt; 127],
+        padding: [Byte; 4],
+    }
+
+    unsafe impl crate::mem::AsBytes for Packet {}
+
+    let packet = Packet {
+        pod_header: SpaHeader {
+            kind: SpaKind::ARRAY,
+            size: size_of::<Packet>()
+                .strict_sub(size_of::<SpaHeader>())
+                .strict_sub(size_of::<<super::SpaInt as PrimPod>::Padding>())
+                .try_into()
+                .unwrap(),
+        },
+        array_header: SpaHeader {
+            kind: SpaKind::INT,
+            size: super::SpaInt::SIZE,
+        },
+        data: [0.into(); _],
+        padding: [Byte::new(0); _],
+    };
+
+    let (longs, rest) =
+        PrimSlice::<super::SpaInt>::decode(as_bytes(&packet)).unwrap();
+
+    assert!(rest.is_empty());
+
+    assert_eq!(longs.len() as usize, packet.data.len());
+}
