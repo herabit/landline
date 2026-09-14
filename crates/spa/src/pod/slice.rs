@@ -1346,10 +1346,14 @@ fn test_fuck_me() {
         padding: [Byte::new(0); _],
     };
 
-    let (longs, rest) =
+    let (ints, rest) =
         PrimSlice::<super::SpaInt>::decode(as_bytes(&packet)).unwrap();
+
+    for &super::SpaInt(int) in ints {
+        println!("Integer go brrr: {int}");
+    }
 
     assert!(rest.is_empty());
 
-    assert_eq!(longs.len() as usize, packet.data.len());
+    assert_eq!(ints.len() as usize, packet.data.len());
 }
