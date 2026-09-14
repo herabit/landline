@@ -1,8 +1,15 @@
-use std::{array, borrow::Borrow, fmt, hint, marker::PhantomData, ops::Index, ptr::NonNull};
+use std::{
+    array,
+    borrow::{Borrow, BorrowMut},
+    fmt, hint,
+    marker::PhantomData,
+    ops::{Index, IndexMut},
+    ptr::NonNull,
+};
 
 use crate::{
     mem::{Byte, as_bytes},
-    pod::{ParsePodError, PrimBody, PrimPod, SpaHeader, kind::SpaKind},
+    pod::{ParsePodError, PrimBody, PrimPod, Result, SpaHeader, kind::SpaKind},
 };
 
 /// # Safety
@@ -19,9 +26,10 @@ const unsafe fn split_at<T>(
         let head = NonNull::slice_from_raw_parts(data.cast::<T>(), mid);
 
         // SAFETY: We know that `data` is a valid allocation, and that `mid` is in bounds.
-        let tail = NonNull::slice_from_raw_parts(unsafe { data.cast::<T>().add(mid) }, unsafe {
-            data.len().unchecked_sub(mid)
-        });
+        let tail = NonNull::slice_from_raw_parts(
+            unsafe { data.cast::<T>().add(mid) },
+            unsafe { data.len().unchecked_sub(mid) },
+        );
 
         Some((head, tail))
     } else {
@@ -41,7 +49,8 @@ const unsafe fn unchecked_div_rem(
     lhs: u32,
     rhs: u32,
 ) -> (u32, u32) {
-    let (Some(div), Some(rem)) = (lhs.checked_div(rhs), lhs.checked_rem(rhs)) else {
+    let (Some(div), Some(rem)) = (lhs.checked_div(rhs), lhs.checked_rem(rhs))
+    else {
         // SAFETY: The caller promises `rhs != 0`.
         unsafe { hint::unreachable_unchecked() };
     };
@@ -125,7 +134,9 @@ where
         let len = {
             // SAFETY: We only support 32-bit and 64-bit platforms, and we require that
             //         the length, size, and stride must all fit in a u32.
-            unsafe { hint::assert_unchecked(self.data.len() <= u32::MAX as usize) };
+            unsafe {
+                hint::assert_unchecked(self.data.len() <= u32::MAX as usize)
+            };
 
             self.data.len() as u32
         };
@@ -138,7 +149,8 @@ where
             //         that do, it makes the stride divide exactly by `8`.
             //
             //         See `RawSlice::parse` for details.
-            let padding_size = unsafe { (len % 2).unchecked_mul(P::PADDING_SIZE) };
+            let padding_size =
+                unsafe { (len % 2).unchecked_mul(P::PADDING_SIZE) };
 
             (slice_size, padding_size)
         };
@@ -158,17 +170,25 @@ where
                 // SAFETY: Since we know that `slice_size == len * P::SIZE` and
                 //         that `P::SIZE != 0`, we know for a *fact* that `slice_size == 0`
                 //         only ever when `len == 0`.
-                unsafe { hint::assert_unchecked((slice_size == 0) == (len == 0)) };
+                unsafe {
+                    hint::assert_unchecked((slice_size == 0) == (len == 0))
+                };
 
                 // SAFETY: We know for a fact that `slice_size == len * P::SIZE` and
                 //         that `P::SIZE != 0`, thus it is safe to perform an exact division.
-                unsafe { hint::assert_unchecked(unchecked_div_exact(slice_size, P::SIZE) == len) };
+                unsafe {
+                    hint::assert_unchecked(
+                        unchecked_div_exact(slice_size, P::SIZE) == len,
+                    )
+                };
 
                 if len != 0 {
                     // SAFETY: We know for a fact that `slice_size == len * P::SIZE` and that
                     //         `P::SIZE != 0` and `len != 0`, thus it is safe to perform an exact division.
                     unsafe {
-                        hint::assert_unchecked(unchecked_div_exact(slice_size, len) == P::SIZE)
+                        hint::assert_unchecked(
+                            unchecked_div_exact(slice_size, len) == P::SIZE,
+                        )
                     };
                 }
             }
@@ -215,11 +235,17 @@ where
                 //
                 //          See `RawSlice::parse` for more info.
                 unsafe {
-                    hint::assert_unchecked(unchecked_div_exact(padding, P::PADDING_SIZE) <= 1)
+                    hint::assert_unchecked(
+                        unchecked_div_exact(padding, P::PADDING_SIZE) <= 1,
+                    )
                 };
 
                 // SAFETY: Same as above.
-                unsafe { hint::assert_unchecked(padding == P::PADDING_SIZE || padding == 0) };
+                unsafe {
+                    hint::assert_unchecked(
+                        padding == P::PADDING_SIZE || padding == 0,
+                    )
+                };
             }
 
             // SAFETY: We guarantee that `data` is a valid allocation that spanning `stride` bytes.
@@ -229,7 +255,10 @@ where
             )
         };
 
-        let slice = NonNull::slice_from_raw_parts(self.data.cast::<Byte>(), size as usize);
+        let slice = NonNull::slice_from_raw_parts(
+            self.data.cast::<Byte>(),
+            size as usize,
+        );
 
         (slice, padding)
     }
@@ -280,18 +309,20 @@ where
     #[inline(always)]
     const unsafe fn decode(
         bytes: NonNull<[Byte]>
-    ) -> Result<(RawSlice<P>, NonNull<[Byte]>), ParsePodError> {
+    ) -> Result<(RawSlice<P>, NonNull<[Byte]>)> {
         const { Self::ASSERT };
 
         // SAFETY: The caller ensures this is sound.
-        let Some((headers, bytes)) = (unsafe { split_at(bytes, size_of::<[SpaHeader; 2]>()) })
+        let Some((headers, bytes)) =
+            (unsafe { split_at(bytes, size_of::<[SpaHeader; 2]>()) })
         else {
             hint::cold_path();
             return Err(ParsePodError::InsufficientSpace);
         };
 
         // SAFETY: The caller ensures it's sound to treat the first 16 bytes as headers.
-        let [pod_header, array_header] = unsafe { headers.cast::<[SpaHeader; 2]>().as_ref() };
+        let [pod_header, array_header] =
+            unsafe { headers.cast::<[SpaHeader; 2]>().as_ref() };
 
         if P::SIZE == 0 {
             // NOTE: We're just going to error on arrays of zero sized types. They don't make sense within the context of
@@ -309,7 +340,8 @@ where
             // NOTE: We somehow don't have enough room for the array's header.
             hint::cold_path();
             Err(ParsePodError::InsufficientSpace)
-        } else if let array_size = pod_header.size.strict_sub(size_of::<SpaHeader>() as u32)
+        } else if let array_size =
+            pod_header.size.strict_sub(size_of::<SpaHeader>() as u32)
             && let Some(len) = checked_div_exact(array_size, P::SIZE)
         {
             // NOTE: Success!!!
@@ -333,7 +365,7 @@ where
     const unsafe fn parse(
         bytes: NonNull<[Byte]>,
         len: u32,
-    ) -> Result<(RawSlice<P>, NonNull<[Byte]>), ParsePodError> {
+    ) -> Result<(RawSlice<P>, NonNull<[Byte]>)> {
         const { Self::ASSERT };
 
         let Some(size) = len.checked_mul(P::SIZE) else {
@@ -367,19 +399,23 @@ where
         unsafe { hint::assert_unchecked(stride.is_multiple_of(8)) };
 
         // SAFETY: The caller ensures that `bytes` is a valid allocation.
-        let Some((this, rest)) = (unsafe { split_at(bytes, stride as usize) }) else {
+        let Some((this, rest)) = (unsafe { split_at(bytes, stride as usize) })
+        else {
             hint::cold_path();
             return Err(ParsePodError::InsufficientSpace);
         };
 
         // SAFETY: The caller ensures that `bytes` is a valid allocation (which these slices are derived from).
-        let (slice, padding) = unsafe { split_at(this, size as usize) }.unwrap();
+        let (slice, padding) =
+            unsafe { split_at(this, size as usize) }.unwrap();
 
         // NOTE: These are sanity checks.
         if P::SIZE != 0 {
             assert!(slice.len() % P::SIZE as usize == 0);
         }
-        assert!(padding.is_empty() || padding.len() == P::PADDING_SIZE as usize);
+        assert!(
+            padding.is_empty() || padding.len() == P::PADDING_SIZE as usize
+        );
 
         let slice = RawSlice::<P> {
             data: NonNull::slice_from_raw_parts(this.cast::<P>(), len as usize),
@@ -417,13 +453,40 @@ impl<'a, P> PrimSlice<'a, P>
 where
     P: PrimPod,
 {
+    /// Decode a primitive slice from the start of its header.
+    #[inline(always)]
+    #[allow(unused_unsafe)]
+    pub const fn decode(
+        bytes: &'a [Byte]
+    ) -> Result<(PrimSlice<'a, P>, &'a [Byte])> {
+        // SAFETY: We know an immutable slice is a valid allocation.
+        match unsafe { RawSlice::decode(NonNull::from_ref(bytes)) } {
+            Ok((slice, rest)) => {
+                // SAFETY: We know `slice` to be derived from `bytes`.
+                let slice: PrimSlice<'a, P> = unsafe {
+                    PrimSlice {
+                        inner: slice,
+                        _slice: PhantomData,
+                        _padding: PhantomData,
+                    }
+                };
+
+                // SAFETY: We know `rest` to be derived from `bytes`.
+                let rest: &'a [Byte] = unsafe { rest.as_ref() };
+
+                Ok((slice, rest))
+            },
+            Err(err) => Err(err),
+        }
+    }
+
     /// Parse a primitive slice given a buffer and the amount of elements.
     #[inline(always)]
     #[allow(unused_unsafe)]
     pub const fn parse(
         bytes: &'a [Byte],
         len: u32,
-    ) -> Result<(PrimSlice<'a, P>, &'a [Byte]), ParsePodError> {
+    ) -> Result<(PrimSlice<'a, P>, &'a [Byte])> {
         // SAFETY: We know an immutable slice is a valid allocation.
         match unsafe { RawSlice::parse(NonNull::from_ref(bytes), len) } {
             Ok((slice, rest)) => {
@@ -544,7 +607,7 @@ impl<'a, P> Copy for PrimSlice<'a, P> where P: PrimPod {}
 
 // SAFETY: Since this is functionally a `(&'a [P], Option<&'a P::Padding>)`,
 //         we follow the rules of references. References are only safe to send
-//         to another thread if their referent is `Sync`. So, since we're covariant
+//         to another thread if their referent is `Sync`. So, since our fields are covariant
 //         over `&'a [P]` and `&'a P::Padding`, and transitively `P` and `P::Padding`,
 //         we can implement `Send` when both `P` and `P::Padding` are `Sync`.
 unsafe impl<'a, P> Send for PrimSlice<'a, P>
@@ -556,10 +619,11 @@ where
 }
 
 // SAFETY: Since this is functionally a `(&'a [P], Option<&'a P::Padding>)`,
-//         we follow the rules of references. References are only `Sync` if their
-//         referent is `Sync`. Thus, since we're covariant over `&'a [P]`
-//         and `Option<&'a P::Padding>`, and transitively `P` and `P::Padding`,
-//         we can implement `Sync` when both `P` and `P::Padding` are `Sync`.
+//         we follow the rules of references. References are only safe to share
+//         with another thread if their referent is `Sync`. Thus, since our fields
+//         are covariant over `&'a [P]` and `Option<&'a P::Padding>`, and transitively
+//         `P` and `P::Padding`, we can implement `Sync` when both `P` and `P::Padding`
+//         are `Sync`.
 unsafe impl<'a, P> Sync for PrimSlice<'a, P>
 where
     P: PrimPod,
@@ -663,7 +727,8 @@ where
     }
 }
 
-impl<'a, P, const N: usize> TryFrom<PrimSlice<'a, P>> for (&'a [P; N], Option<&'a P::Padding>)
+impl<'a, P, const N: usize> TryFrom<PrimSlice<'a, P>>
+    for (&'a [P; N], Option<&'a P::Padding>)
 where
     P: PrimPod,
 {
@@ -686,7 +751,9 @@ where
     #[inline(always)]
     fn try_from(value: &'a [P]) -> Result<Self, Self::Error> {
         match u32::try_from(value.len()) {
-            Ok(len) => PrimSlice::parse(as_bytes(value), len).map(|(slice, _)| slice),
+            Ok(len) => {
+                PrimSlice::parse(as_bytes(value), len).map(|(slice, _)| slice)
+            },
             Err(_) => Err(ParsePodError::InsufficientSpace),
         }
     }
@@ -701,5 +768,551 @@ where
     #[inline(always)]
     fn try_from(value: &'a [P; N]) -> Result<Self, Self::Error> {
         value.as_slice().try_into()
+    }
+}
+
+impl<'a, P> IntoIterator for PrimSlice<'a, P>
+where
+    P: PrimPod,
+{
+    type Item = &'a P;
+    type IntoIter = <&'a [P] as IntoIterator>::IntoIter;
+
+    #[inline(always)]
+    #[allow(clippy::into_iter_on_ref)]
+    fn into_iter(self) -> Self::IntoIter {
+        self.prims().into_iter()
+    }
+}
+
+impl<'a, P> IntoIterator for &PrimSlice<'a, P>
+where
+    P: PrimPod,
+{
+    type Item = &'a P;
+    type IntoIter = <&'a [P] as IntoIterator>::IntoIter;
+
+    #[inline(always)]
+    #[allow(clippy::into_iter_on_ref)]
+    fn into_iter(self) -> Self::IntoIter {
+        self.prims().into_iter()
+    }
+}
+
+impl<'a, P> IntoIterator for &mut PrimSlice<'a, P>
+where
+    P: PrimPod,
+{
+    type Item = &'a P;
+    type IntoIter = <&'a [P] as IntoIterator>::IntoIter;
+
+    #[inline(always)]
+    #[allow(clippy::into_iter_on_ref)]
+    fn into_iter(self) -> Self::IntoIter {
+        self.prims().into_iter()
+    }
+}
+
+/// A mutable slice of primitive PODs, as well as the trailing padding, if any.
+#[repr(transparent)]
+pub struct PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    inner: RawSlice<P>,
+    _slice: PhantomData<&'a mut [P]>,
+    _padding: PhantomData<Option<&'a mut P::Padding>>,
+}
+
+impl<'a, P> PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    /// Decode a mutable primitive slice from the start of its header.
+    #[inline(always)]
+    #[allow(unused_unsafe)]
+    pub const fn decode(
+        bytes: &'a mut [Byte]
+    ) -> Result<(PrimSliceMut<'a, P>, &'a mut [Byte])> {
+        // SAFETY: We know a mutable slice is a valid allocation.
+        match unsafe { RawSlice::decode(NonNull::from_mut(bytes)) } {
+            Ok((slice, mut rest)) => {
+                // SAFETY: We know that `slice` is derived from `bytes`.
+                let slice: PrimSliceMut<'a, P> = unsafe {
+                    PrimSliceMut {
+                        inner: slice,
+                        _slice: PhantomData,
+                        _padding: PhantomData,
+                    }
+                };
+
+                // SAFETY: We know `rest` is derived from `bytes`.
+                let rest: &'a mut [Byte] = unsafe { rest.as_mut() };
+
+                Ok((slice, rest))
+            },
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Parse a primitive slice given a buffer and the amount of elements.
+    #[inline(always)]
+    #[allow(unused_unsafe)]
+    pub const fn parse(
+        bytes: &'a mut [Byte],
+        len: u32,
+    ) -> Result<(PrimSliceMut<'a, P>, &'a mut [Byte])> {
+        // SAFETY: We know a mutable slice is a valid allocation.
+        match unsafe { RawSlice::parse(NonNull::from_mut(bytes), len) } {
+            Ok((slice, mut rest)) => {
+                // SAFETY: We know that `slice` is derived from `bytes`.
+                let slice: PrimSliceMut<'a, P> = unsafe {
+                    PrimSliceMut {
+                        inner: slice,
+                        _slice: PhantomData,
+                        _padding: PhantomData,
+                    }
+                };
+
+                // SAFETY: We know that `rest` is derived from `bytes`.
+                let rest: &'a mut [Byte] = unsafe { rest.as_mut() };
+
+                Ok((slice, rest))
+            },
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Create an empty [`PrimSliceMut`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn empty() -> PrimSliceMut<'a, P> {
+        const {
+            match PrimSliceMut::parse(&mut [], 0) {
+                Ok((slice, _)) => slice,
+                Err(_) => unreachable!(),
+            }
+        }
+    }
+
+    /// Get the length of the slice.
+    #[inline(always)]
+    #[must_use]
+    pub const fn len(&self) -> u32 {
+        self.inner.len()
+    }
+
+    /// Returns whether this slice is empty.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Consume this slice and construct an [`PrimSlice`] from it.
+    #[inline(always)]
+    #[must_use]
+    #[allow(unused_unsafe)]
+    pub const fn into_slice(self) -> PrimSlice<'a, P> {
+        // SAFETY: It is always sound to demote a mutable reference to
+        //         an immutable one of the same lifetime if you
+        //         take ownership of it.
+        unsafe {
+            PrimSlice {
+                inner: self.inner,
+                _slice: PhantomData,
+                _padding: PhantomData,
+            }
+        }
+    }
+
+    /// Reborrow this slice as a [`PrimSlice`].
+    #[inline(always)]
+    #[must_use]
+    #[allow(unused_unsafe)]
+    pub const fn as_slice(&self) -> PrimSlice<'_, P> {
+        // SAFETY: It is always sound to reborrow a mutable reference
+        //         as an immutable one for some shorter lifetime.
+        unsafe {
+            PrimSlice {
+                inner: self.inner,
+                _slice: PhantomData,
+                _padding: PhantomData,
+            }
+        }
+    }
+
+    /// Mutably reborrow this slice as a [`PrimSliceMut`].
+    #[inline(always)]
+    #[must_use]
+    #[allow(unused_unsafe)]
+    pub const fn as_slice_mut(&mut self) -> PrimSliceMut<'_, P> {
+        // SAFETY: It is always sound to reborrow a mutable reference
+        //         as a mutable reference for some shorter lifetime.
+        unsafe {
+            PrimSliceMut {
+                inner: self.inner,
+                _slice: PhantomData,
+                _padding: PhantomData,
+            }
+        }
+    }
+
+    /// Get the underlying bytes of this slice, including the padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[Byte] {
+        // SAFETY: We know that the underlying allocation is valid,
+        //         and we're shortening the lifetime.
+        unsafe { self.inner.as_bytes().as_ref() }
+    }
+
+    /// Mutably get the underlying bytes of this slice, including the padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_bytes_mut(&mut self) -> &mut [Byte] {
+        // SAFETY: We know that the underlying allocation is valid,
+        //         and we're shortening the lifetime.
+        unsafe { self.inner.as_bytes().as_mut() }
+    }
+
+    /// Consume this slice, returning the underlying the bytes, including the padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn into_bytes(self) -> &'a mut [Byte] {
+        // SAFETY: We know that the underlying allocation is valid,
+        //         and we're consuming `self`, so we're not going to
+        //         accidentally alias the underlying memory.
+        unsafe { self.inner.as_bytes().as_mut() }
+    }
+
+    /// Split the underlying bytes at the start of the padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn split_bytes(&self) -> (&[Byte], &[Byte]) {
+        let (slice, padding) = self.inner.split_bytes();
+
+        // SAFETY: We know that both allocations are valid, and
+        //         we're shortening the lifetime, so there will
+        //         be no aliased mutability.
+        (unsafe { slice.as_ref() }, unsafe { padding.as_ref() })
+    }
+
+    /// Mutably split the underyling bytes at the start of the padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn split_bytes_mut(&mut self) -> (&mut [Byte], &mut [Byte]) {
+        let (mut slice, mut padding) = self.inner.split_bytes();
+
+        // SAFETY: We know that both allocations are valid, and
+        //         we're shortening the lifetime, so there
+        //         will be no aliased mutability.
+        (unsafe { slice.as_mut() }, unsafe { padding.as_mut() })
+    }
+
+    /// Consume this slice and split at the start of the padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn into_split_bytes(self) -> (&'a mut [Byte], &'a mut [Byte]) {
+        let (mut slice, mut padding) = self.inner.split_bytes();
+
+        // SAFETY: We know that both allocations are valid,
+        //         and we're allowed to use the lifetime of the
+        //         underlying buffer as we're consuming `self`,
+        //         thus there will be no aliased mutability.
+        (unsafe { slice.as_mut() }, unsafe { padding.as_mut() })
+    }
+
+    /// Split into the underling primitive slice and the padding, if there is any.
+    ///
+    /// # Returns
+    ///
+    /// The padding will always be set to [`None`] for types that don't need padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn split(&self) -> (&[P], Option<&P::Padding>) {
+        let (slice, padding) = self.inner.split();
+
+        // SAFETY: We know that the underlying slice is valid,
+        //         and we're shortening the lifetime, so we're
+        //         not going to encounter aliased mutability.
+        let slice = unsafe { slice.as_ref() };
+
+        let padding = match padding {
+            // SAFETY: Same as above.
+            Some(padding) => Some(unsafe { padding.as_ref() }),
+            None => None,
+        };
+
+        (slice, padding)
+    }
+
+    /// Mutably split into the underlying primitive slice and the padding,
+    /// if there is any.
+    ///
+    /// # Returns
+    ///
+    /// The padding will always be set to [`None`] for types that don't need
+    /// padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn split_mut(&mut self) -> (&mut [P], Option<&mut P::Padding>) {
+        let (mut slice, mut padding) = self.inner.split();
+
+        // SAFETY: We know that the underlying slice is valid, and
+        //         we're shortening the lifetime, so we won't be introducing
+        //         any aliased mutability.
+        let slice = unsafe { slice.as_mut() };
+
+        let padding = match padding {
+            // SAFETY: Same as above.
+            Some(ref mut padding) => Some(unsafe { padding.as_mut() }),
+            None => None,
+        };
+
+        (slice, padding)
+    }
+
+    /// Consume this slice and split into the underlying primitive slice and
+    /// the padding, if there is any.
+    ///
+    /// # Returns
+    ///
+    /// The padding will always be set to [`None`] for types that don't need padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn into_split(self) -> (&'a mut [P], Option<&'a mut P::Padding>) {
+        let (mut slice, mut padding) = self.inner.split();
+
+        // SAFETY: We know that the underlying slice is valid, and
+        //         we're consuming `self` so it's sound to borrow for `'a`.
+        let slice = unsafe { slice.as_mut() };
+
+        let padding = match padding {
+            // SAFETY: Same as above.
+            Some(ref mut padding) => Some(unsafe { padding.as_mut() }),
+            None => None,
+        };
+
+        (slice, padding)
+    }
+
+    /// Get a reference to the underlying primitive slice.
+    #[inline(always)]
+    #[must_use]
+    pub const fn prims(&self) -> &[P] {
+        self.split().0
+    }
+
+    /// Get a reference to the underlying padding, if there's any.
+    ///
+    /// # Returns
+    ///
+    /// This will always return [`None`] for types that don't need padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn padding(&self) -> Option<&P::Padding> {
+        self.split().1
+    }
+
+    /// Get a mutable reference to the underlying primitive slice.
+    #[inline(always)]
+    #[must_use]
+    pub const fn prims_mut(&mut self) -> &mut [P] {
+        self.split_mut().0
+    }
+
+    /// Get a mutable reference to the underlying padding, if there's any.
+    ///
+    /// # Returns
+    ///
+    /// This will always return [`None`] for types that don't need padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn padding_mut(&mut self) -> Option<&mut P::Padding> {
+        self.split_mut().1
+    }
+
+    /// Consume this slice and return the underlying primitive slice.
+    #[inline(always)]
+    #[must_use]
+    pub const fn into_prims(self) -> &'a mut [P] {
+        self.into_split().0
+    }
+
+    /// Consume this slice and return the underlying padding, if there's any.
+    ///
+    /// # Returns
+    ///
+    /// This will always return [`None`] for types that don't need padding.
+    #[inline(always)]
+    #[must_use]
+    pub const fn into_padding(self) -> Option<&'a mut P::Padding> {
+        self.into_split().1
+    }
+}
+// SAFETY: Since this is functionally a `(&'a mut [P], Option<&'a mut P::Padding>)`,
+//         we follow the rules of mutable references. Mutable references are only safe
+//         to send to another thread if their referent is `Send`. So, since our fields
+//         are covariant over `&'a mut [P]` and `&'a mut P::Padding`, but invariant
+//         over `P` and `P::Padding`, we can only implement `Send` when both `P` and
+//         `P::Padding` are `Send`.
+unsafe impl<'a, P> Send for PrimSliceMut<'a, P>
+where
+    P: PrimPod + Send,
+    P::Padding: Send,
+{
+}
+
+// SAFETY: Since this is functionally a `(&'a mut [P], Option<&'a mut P::Padding>)`,
+//         we follow the rules of mutable references. Mutable references are only
+//         safe to share with another thread if their referent is `Sync`. Thus, since
+//         our fields are covariant over `&'a mut [P]` and `&'a mut P::Padding`, but
+//         invariant over `P` and `P::Padding`, we can only implement `Sync` when both
+//         `P` and `P::Padding` are `Sync`.
+unsafe impl<'a, P> Sync for PrimSliceMut<'a, P>
+where
+    P: PrimPod + Sync,
+    P::Padding: Sync,
+{
+}
+
+impl<'a, P> fmt::Debug for PrimSliceMut<'a, P>
+where
+    P: fmt::Debug + PrimPod,
+    P::Padding: fmt::Debug,
+{
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        let (slice, padding) = self.split();
+
+        f.debug_struct("PrimSliceMut")
+            .field("slice", &slice)
+            .field("padding", &padding)
+            .finish()
+    }
+}
+
+impl<'a, P> Default for PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn default() -> Self {
+        PrimSliceMut::empty()
+    }
+}
+
+impl<'a, P> AsRef<[P]> for PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn as_ref(&self) -> &[P] {
+        self.prims()
+    }
+}
+
+impl<'a, P> AsMut<[P]> for PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn as_mut(&mut self) -> &mut [P] {
+        self.prims_mut()
+    }
+}
+
+impl<'a, P> Borrow<[P]> for PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn borrow(&self) -> &[P] {
+        self.prims()
+    }
+}
+
+impl<'a, P> BorrowMut<[P]> for PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn borrow_mut(&mut self) -> &mut [P] {
+        self.prims_mut()
+    }
+}
+
+impl<'a, P, I> Index<I> for PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+    [P]: Index<I>,
+{
+    type Output = <[P] as Index<I>>::Output;
+
+    #[inline(always)]
+    fn index(
+        &self,
+        index: I,
+    ) -> &Self::Output {
+        self.prims().index(index)
+    }
+}
+
+impl<'a, P, I> IndexMut<I> for PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+    [P]: IndexMut<I>,
+{
+    #[inline(always)]
+    fn index_mut(
+        &mut self,
+        index: I,
+    ) -> &mut Self::Output {
+        self.prims_mut().index_mut(index)
+    }
+}
+
+impl<'a, P> IntoIterator for PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    type Item = &'a mut P;
+    type IntoIter = <&'a mut [P] as IntoIterator>::IntoIter;
+
+    #[inline(always)]
+    #[allow(clippy::into_iter_on_ref)]
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_prims().into_iter()
+    }
+}
+
+impl<'a, 'b, P> IntoIterator for &'b PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    type Item = &'b P;
+    type IntoIter = <&'b [P] as IntoIterator>::IntoIter;
+
+    #[inline(always)]
+    #[allow(clippy::into_iter_on_ref)]
+    fn into_iter(self) -> Self::IntoIter {
+        self.prims().into_iter()
+    }
+}
+
+impl<'a, 'b, P> IntoIterator for &'b mut PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    type Item = &'b mut P;
+    type IntoIter = <&'b mut [P] as IntoIterator>::IntoIter;
+
+    #[inline(always)]
+    #[allow(clippy::into_iter_on_ref)]
+    fn into_iter(self) -> Self::IntoIter {
+        self.prims_mut().into_iter()
     }
 }

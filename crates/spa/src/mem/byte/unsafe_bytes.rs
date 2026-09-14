@@ -101,7 +101,8 @@ impl AccessKind {
             //
             // ((ReadWrite + 1) ^ 0b1) - 0b011 = 1 0b0000_00_01
             // ((ReadWrite + 2) ^ 0b1) - 0b011 = 1 0b0000_00_01
-            let value = ((self as i8).strict_add(rhs_sign_ext) ^ 0b1).strict_sub(0b11);
+            let value =
+                ((self as i8).strict_add(rhs_sign_ext) ^ 0b1).strict_sub(0b11);
 
             let overflow = (value >> 2) & 0b10;
 
@@ -285,7 +286,9 @@ where
     #[inline(always)]
     #[must_use]
     pub const unsafe fn from_ref_unchecked(val: &T) -> &UnsafeBytes<T, A> {
-        unsafe { (&raw const *val as *const UnsafeBytes<T, A>).as_ref_unchecked() }
+        unsafe {
+            (&raw const *val as *const UnsafeBytes<T, A>).as_ref_unchecked()
+        }
     }
 
     #[inline(always)]
@@ -305,7 +308,9 @@ where
 
     #[inline(always)]
     #[must_use]
-    pub const unsafe fn from_mut_unchecked(val: &mut T) -> &mut UnsafeBytes<T, A> {
+    pub const unsafe fn from_mut_unchecked(
+        val: &mut T
+    ) -> &mut UnsafeBytes<T, A> {
         unsafe { (&raw mut *val as *mut UnsafeBytes<T, A>).as_mut_unchecked() }
     }
 

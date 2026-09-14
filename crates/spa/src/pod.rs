@@ -38,13 +38,15 @@ pub struct SpaHeader {
     pub kind: u32,
 }
 
-const _: () = assert!(size_of::<SpaHeader>() == 8 && align_of::<SpaHeader>() == 1);
+const _: () =
+    assert!(size_of::<SpaHeader>() == 8 && align_of::<SpaHeader>() == 1);
 
 impl SpaHeader {
     /// A `SpaHeader` corresponding to the `None` POD type.
     ///
     /// This is the default value.
-    pub const NONE: SpaHeader = SpaHeader::from_spa_kind(SpaKind::None).unwrap();
+    pub const NONE: SpaHeader =
+        SpaHeader::from_spa_kind(SpaKind::None).unwrap();
 
     /// Create a [`SpaHeader`] for a given [`SpaKind`], given
     /// it's a primitive [`SpaKind`].
@@ -147,7 +149,9 @@ impl SpaHeader {
     /// Returns [`None`] if there's too little space in `bytes`.
     #[inline(always)]
     #[must_use]
-    pub const fn split_bytes_mut(bytes: &mut [Byte]) -> Option<(&mut SpaHeader, &mut [Byte])> {
+    pub const fn split_bytes_mut(
+        bytes: &mut [Byte]
+    ) -> Option<(&mut SpaHeader, &mut [Byte])> {
         match bytes.split_first_chunk_mut::<{ size_of::<SpaHeader>() }>() {
             Some((header_chunk, tail)) => Some({
                 // SAFETY: See the safety info in `SpaHeader::split_bytes`, the same applies here.
@@ -195,7 +199,9 @@ impl fmt::Debug for SpaHeader {
         f: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
         let kind = fmt::from_fn(|f| match self.spa_kind() {
-            Some(ref spa_kind) => f.debug_tuple("Known").field(&spa_kind).finish(),
+            Some(ref spa_kind) => {
+                f.debug_tuple("Known").field(&spa_kind).finish()
+            },
             None => f.debug_tuple("Unknown").field(&{ self.kind }).finish(),
         });
 
@@ -296,6 +302,10 @@ mod slice;
 pub use slice::*;
 
 mod sealed;
+
+/// Self explanatory, a [`Result`](std::result::Result) that exists
+/// to reduce boilerplate.
+pub type Result<T, E = ParsePodError> = std::result::Result<T, E>;
 
 /// An error that can occur when parsing a POD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

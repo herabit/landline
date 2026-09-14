@@ -185,7 +185,9 @@ impl SpaKind {
             // 0-sized types.
             SpaKind::None => Some(0),
             // 32-bit types.
-            SpaKind::Bool | SpaKind::Id | SpaKind::Int | SpaKind::Float => Some(4),
+            SpaKind::Bool | SpaKind::Id | SpaKind::Int | SpaKind::Float => {
+                Some(4)
+            },
             // 64-bit types.
             SpaKind::Long
             | SpaKind::Double

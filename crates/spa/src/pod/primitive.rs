@@ -15,7 +15,16 @@ use crate::{
 ///
 /// Implementors must have an alignment of one, and have a size that is some multiple of four (including zero).
 pub unsafe trait PrimPad:
-    'static + Copy + AsBytes + AsBytesMut + Unpin + Default + fmt::Debug + Send + Sync + sealed::PrimPad
+    'static
+    + Copy
+    + AsBytes
+    + AsBytesMut
+    + Unpin
+    + Default
+    + fmt::Debug
+    + Send
+    + Sync
+    + sealed::PrimPad
 {
     /// A default value for this type.
     const DEFAULT: Self;
@@ -40,7 +49,14 @@ where
 ///
 /// Likely some other stuff that needs to be hashed out.
 pub unsafe trait PrimPod:
-    'static + Copy + AsBytes + AsBytesMut + Unpin + Default + fmt::Debug + sealed::PrimPod
+    'static
+    + Copy
+    + AsBytes
+    + AsBytesMut
+    + Unpin
+    + Default
+    + fmt::Debug
+    + sealed::PrimPod
 {
     /// The tail padding for this type.
     ///

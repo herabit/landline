@@ -94,7 +94,9 @@ impl Byte {
     /// Cast a mutable [`Byte`] array reference to a mutable [`u8`] array reference.
     #[inline(always)]
     #[must_use]
-    pub const fn as_u8_array_mut<const N: usize>(array: &mut [Byte; N]) -> &mut [u8; N] {
+    pub const fn as_u8_array_mut<const N: usize>(
+        array: &mut [Byte; N]
+    ) -> &mut [u8; N] {
         Byte::as_u8_slice_mut(array).as_mut_array().unwrap()
     }
 }

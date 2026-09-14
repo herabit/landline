@@ -1,6 +1,8 @@
 // use std::{hint, mem};
 
-use std::{convert::Infallible, ffi::c_void, fmt, hash, marker::PhantomData, mem};
+use std::{
+    convert::Infallible, ffi::c_void, fmt, hash, marker::PhantomData, mem,
+};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},

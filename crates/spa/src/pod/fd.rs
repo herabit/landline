@@ -133,9 +133,9 @@ fn into_spa_fd<F>(fd: F) -> SpaFd
 where
     F: TryInto<i64, Error: std::fmt::Debug>,
 {
-    fd.try_into()
-        .map(SpaFd)
-        .expect("somehow we have a file descriptor that does not fit within 64 bits")
+    fd.try_into().map(SpaFd).expect(
+        "somehow we have a file descriptor that does not fit within 64 bits",
+    )
 }
 
 impl From<OwnedFd> for SpaFd {

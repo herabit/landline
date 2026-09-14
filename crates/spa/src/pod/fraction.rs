@@ -30,7 +30,11 @@ impl SpaFraction {
         ) {
             (Some(div), Some(rem @ 0)) => {
                 // SAFETY: If the remainder is zero, then we know `numer` is exactly divisible by `denom`.
-                unsafe { hint::assert_unchecked(div.unchecked_mul(self.denom) == self.numer) };
+                unsafe {
+                    hint::assert_unchecked(
+                        div.unchecked_mul(self.denom) == self.numer,
+                    )
+                };
                 Some((div, rem))
             },
             (Some(div), Some(rem @ 1..)) => Some((div, rem)),
@@ -38,7 +42,9 @@ impl SpaFraction {
                 hint::cold_path();
                 None
             },
-            (None, Some(_)) | (Some(_), None) => unreachable!(),
+            (None, Some(_)) | (Some(_), None) => {
+                unreachable!()
+            },
         }
         // match NonZero::new(self.denom) {
         //     Some(denom) => Some((self.numer / denom.get(), self.numer % denom.get())),
@@ -68,7 +74,8 @@ impl SpaFraction {
         self,
         value: u32,
     ) -> bool {
-        self.is_defined() && (self.denom as u64).strict_mul(value as u64) == self.numer as u64
+        self.is_defined()
+            && (self.denom as u64).strict_mul(value as u64) == self.numer as u64
     }
 
     /// Returns this fraction as a [`u32`], if it can be represented as one losslessly.
@@ -146,13 +153,15 @@ impl SpaFraction {
                 numer: int_part,
                 denom: 1,
             }),
-            Some((int_part, 1..)) => Some(SpaFraction {
-                // SAFETY: The existence of a remainder at all implies it is sound to increment
-                //         by up to and including, the remainder. We're only incrementing by one,
-                //         and the remainder is at least one, thus this is sound.
-                numer: unsafe { int_part.unchecked_add(1) },
-                denom: 1,
-            }),
+            Some((int_part, 1..)) => {
+                Some(SpaFraction {
+                    // SAFETY: The existence of a remainder at all implies it is sound to increment
+                    //         by up to and including, the remainder. We're only incrementing by one,
+                    //         and the remainder is at least one, thus this is sound.
+                    numer: unsafe { int_part.unchecked_add(1) },
+                    denom: 1,
+                })
+            },
             None => None,
         }
     }
@@ -227,7 +236,8 @@ impl PartialOrd for SpaFraction {
         } = other;
 
         // Dividing by zero is undefined.
-        let (lhs_denom, rhs_denom) = NonZero::new(lhs_denom).zip(NonZero::new(rhs_denom))?;
+        let (lhs_denom, rhs_denom) =
+            NonZero::new(lhs_denom).zip(NonZero::new(rhs_denom))?;
 
         if (lhs_numer == 0) && (rhs_numer == 0) {
             // If both numerators are zero, then we know them to be equivalent regardless of the denominator.
