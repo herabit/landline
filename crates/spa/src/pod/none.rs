@@ -274,6 +274,36 @@ impl<T> From<SpaNone<T>> for Option<T> {
     }
 }
 
+impl<T> IntoIterator for SpaNone<T> {
+    type Item = T;
+    type IntoIter = std::iter::Empty<T>;
+
+    #[inline(always)]
+    fn into_iter(self) -> Self::IntoIter {
+        std::iter::empty()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a SpaNone<T> {
+    type Item = &'a T;
+    type IntoIter = std::iter::Empty<&'a T>;
+
+    #[inline(always)]
+    fn into_iter(self) -> Self::IntoIter {
+        std::iter::empty()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a mut SpaNone<T> {
+    type Item = &'a mut T;
+    type IntoIter = std::iter::Empty<&'a mut T>;
+
+    #[inline(always)]
+    fn into_iter(self) -> Self::IntoIter {
+        std::iter::empty()
+    }
+}
+
 // NOTE: All `SpaNone` types have the same layout, the generic type
 //       is only used in a `PhantomData`.
 const _: () = assert!(size_of::<SpaNone>() == 0);

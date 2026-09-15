@@ -14,6 +14,8 @@ use crate::{
 /// # Safety
 ///
 /// Implementors must have an alignment of one, and have a size that is some multiple of four (including zero).
+///
+/// Other shit, this is private, so, lol, let me handle this.
 pub unsafe trait PrimPad:
     'static
     + Copy
@@ -42,6 +44,19 @@ where
 
 /// A trait for POD types that are considered primitive. Primitive PODs are those with a fixed size known at compile time,
 /// and a fixed stride, among other things.
+///
+/// # TODO
+///
+/// > Introduce a new trait that permits converting between primitives and their raw underyling, aligned types,
+/// > if they have such a type.
+/// >
+/// > This would assist in conversions, for example permit in-place conversions of a `[f32]` to a `PrimSlice`,
+/// > and so on.
+/// >
+/// > I'm tired, and likely will be taking a break for a bit, but, this will be added sometime soon.
+/// >
+/// > ... It may also be entirely unecessary... In *most* scenarios it's, fine. Idk. I *may* add this later.
+/// > I shouldn't keep bikeshedding.
 ///
 /// # Safety
 ///

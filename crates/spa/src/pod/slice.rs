@@ -5,10 +5,12 @@ use std::{
     marker::PhantomData,
     ops::{Index, IndexMut},
     ptr::NonNull,
+    rc::Rc,
+    sync::Arc,
 };
 
 use crate::{
-    mem::{Byte, as_bytes},
+    mem::{Byte, as_bytes, as_bytes_mut},
     pod::{ParsePodError, PrimBody, PrimPod, Result, SpaHeader, kind::SpaKind},
 };
 
@@ -534,6 +536,13 @@ where
         self.len() == 0
     }
 
+    /// Reborrow this slice for a shorter lifetime.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_slice(&self) -> PrimSlice<'_, P> {
+        *self
+    }
+
     /// Get the underlying bytes of this slice, including the padding.
     #[inline(always)]
     #[must_use]
@@ -590,6 +599,14 @@ where
     #[must_use]
     pub const fn padding(&self) -> Option<&'a P::Padding> {
         self.split().1
+    }
+
+    /// Returns an iterator over the slice.
+    ///
+    /// This is equivalent to calling `self.prims().iter()`.
+    #[inline(always)]
+    pub fn iter(&self) -> std::slice::Iter<'_, P> {
+        self.prims().iter()
     }
 }
 
@@ -687,6 +704,7 @@ where
     type Output = <[P] as Index<I>>::Output;
 
     #[inline(always)]
+    #[track_caller]
     fn index(
         &self,
         index: I,
@@ -754,7 +772,10 @@ where
             Ok(len) => {
                 PrimSlice::parse(as_bytes(value), len).map(|(slice, _)| slice)
             },
-            Err(_) => Err(ParsePodError::InsufficientSpace),
+            Err(_) => {
+                hint::cold_path();
+                Err(ParsePodError::InsufficientSpace)
+            },
         }
     }
 }
@@ -771,17 +792,75 @@ where
     }
 }
 
+impl<'a, P, const N: usize> TryFrom<PrimSlice<'a, P>> for [P; N]
+where
+    P: PrimPod,
+{
+    type Error = array::TryFromSliceError;
+
+    #[inline(always)]
+    fn try_from(value: PrimSlice<'a, P>) -> Result<Self, Self::Error> {
+        value.prims().try_into()
+    }
+}
+
+impl<'a, P> From<PrimSlice<'a, P>> for Vec<P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: PrimSlice<'a, P>) -> Self {
+        value.prims().to_vec()
+    }
+}
+
+impl<'a, P> From<PrimSlice<'a, P>> for Box<[P]>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: PrimSlice<'a, P>) -> Self {
+        value.prims().into()
+    }
+}
+
+impl<'a, P> From<PrimSlice<'a, P>> for Rc<[P]>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: PrimSlice<'a, P>) -> Self {
+        value.prims().into()
+    }
+}
+
+impl<'a, P> From<PrimSlice<'a, P>> for Arc<[P]>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: PrimSlice<'a, P>) -> Self {
+        value.prims().into()
+    }
+}
+
+// impl<'a, P> From<PrimSlice<'a, P>> for Vec<P>
+// where
+
 impl<'a, P> IntoIterator for PrimSlice<'a, P>
 where
     P: PrimPod,
 {
     type Item = &'a P;
-    type IntoIter = <&'a [P] as IntoIterator>::IntoIter;
+    type IntoIter = std::slice::Iter<'a, P>;
 
     #[inline(always)]
-    #[allow(clippy::into_iter_on_ref)]
     fn into_iter(self) -> Self::IntoIter {
-        self.prims().into_iter()
+        self.prims().iter()
     }
 }
 
@@ -790,12 +869,11 @@ where
     P: PrimPod,
 {
     type Item = &'a P;
-    type IntoIter = <&'a [P] as IntoIterator>::IntoIter;
+    type IntoIter = std::slice::Iter<'a, P>;
 
     #[inline(always)]
-    #[allow(clippy::into_iter_on_ref)]
     fn into_iter(self) -> Self::IntoIter {
-        self.prims().into_iter()
+        self.prims().iter()
     }
 }
 
@@ -804,12 +882,11 @@ where
     P: PrimPod,
 {
     type Item = &'a P;
-    type IntoIter = <&'a [P] as IntoIterator>::IntoIter;
+    type IntoIter = std::slice::Iter<'a, P>;
 
     #[inline(always)]
-    #[allow(clippy::into_iter_on_ref)]
     fn into_iter(self) -> Self::IntoIter {
-        self.prims().into_iter()
+        self.prims().iter()
     }
 }
 
@@ -1150,7 +1227,24 @@ where
     pub const fn into_padding(self) -> Option<&'a mut P::Padding> {
         self.into_split().1
     }
+
+    /// Returns an iterator over the slice.
+    ///
+    /// This is equivalent to calling `self.prims().iter()`.
+    #[inline(always)]
+    pub fn iter(&self) -> std::slice::Iter<'_, P> {
+        self.prims().iter()
+    }
+
+    /// Returns a mutable iterator over the slice.
+    ///
+    /// This is equivalent to calling `self.prims_mut().iter_mut()`.
+    #[inline(always)]
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, P> {
+        self.prims_mut().iter_mut()
+    }
 }
+
 // SAFETY: Since this is functionally a `(&'a mut [P], Option<&'a mut P::Padding>)`,
 //         we follow the rules of mutable references. Mutable references are only safe
 //         to send to another thread if their referent is `Send`. So, since our fields
@@ -1253,6 +1347,7 @@ where
     type Output = <[P] as Index<I>>::Output;
 
     #[inline(always)]
+    #[track_caller]
     fn index(
         &self,
         index: I,
@@ -1267,6 +1362,7 @@ where
     [P]: IndexMut<I>,
 {
     #[inline(always)]
+    #[track_caller]
     fn index_mut(
         &mut self,
         index: I,
@@ -1280,12 +1376,11 @@ where
     P: PrimPod,
 {
     type Item = &'a mut P;
-    type IntoIter = <&'a mut [P] as IntoIterator>::IntoIter;
+    type IntoIter = std::slice::IterMut<'a, P>;
 
     #[inline(always)]
-    #[allow(clippy::into_iter_on_ref)]
     fn into_iter(self) -> Self::IntoIter {
-        self.into_prims().into_iter()
+        self.into_prims().iter_mut()
     }
 }
 
@@ -1294,12 +1389,11 @@ where
     P: PrimPod,
 {
     type Item = &'b P;
-    type IntoIter = <&'b [P] as IntoIterator>::IntoIter;
+    type IntoIter = std::slice::Iter<'b, P>;
 
     #[inline(always)]
-    #[allow(clippy::into_iter_on_ref)]
     fn into_iter(self) -> Self::IntoIter {
-        self.prims().into_iter()
+        self.prims().iter()
     }
 }
 
@@ -1308,12 +1402,207 @@ where
     P: PrimPod,
 {
     type Item = &'b mut P;
-    type IntoIter = <&'b mut [P] as IntoIterator>::IntoIter;
+    type IntoIter = std::slice::IterMut<'b, P>;
 
     #[inline(always)]
-    #[allow(clippy::into_iter_on_ref)]
     fn into_iter(self) -> Self::IntoIter {
-        self.prims_mut().into_iter()
+        self.prims_mut().iter_mut()
+    }
+}
+
+impl<'a, P> From<PrimSliceMut<'a, P>> for PrimSlice<'a, P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn from(value: PrimSliceMut<'a, P>) -> Self {
+        value.into_slice()
+    }
+}
+
+impl<'a, P> TryFrom<&'a mut [P]> for PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    type Error = ParsePodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a mut [P]) -> Result<Self, Self::Error> {
+        match u32::try_from(value.len()) {
+            Ok(len) => PrimSliceMut::parse(as_bytes_mut(value), len)
+                .map(|(slice, _)| slice),
+            Err(_) => {
+                hint::cold_path();
+                Err(ParsePodError::InsufficientSpace)
+            },
+        }
+    }
+}
+
+impl<'a, P> From<PrimSliceMut<'a, P>> for &'a mut [P]
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn from(value: PrimSliceMut<'a, P>) -> Self {
+        value.into_prims()
+    }
+}
+
+impl<'a, P> From<PrimSliceMut<'a, P>>
+    for (&'a mut [P], Option<&'a mut P::Padding>)
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn from(value: PrimSliceMut<'a, P>) -> Self {
+        value.into_split()
+    }
+}
+
+impl<'a, P> From<PrimSliceMut<'a, P>> for &'a [P]
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn from(value: PrimSliceMut<'a, P>) -> Self {
+        value.into_prims()
+    }
+}
+
+impl<'a, P> From<PrimSliceMut<'a, P>> for (&'a [P], Option<&'a P::Padding>)
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    fn from(value: PrimSliceMut<'a, P>) -> Self {
+        let (slice, padding) = value.into_split();
+
+        (slice, padding.map(|pad| &*pad))
+    }
+}
+
+impl<'a, P, const N: usize> TryFrom<&'a mut [P; N]> for PrimSliceMut<'a, P>
+where
+    P: PrimPod,
+{
+    type Error = ParsePodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a mut [P; N]) -> Result<Self, Self::Error> {
+        value.as_mut_slice().try_into()
+    }
+}
+
+impl<'a, P, const N: usize> TryFrom<PrimSliceMut<'a, P>> for &'a mut [P; N]
+where
+    P: PrimPod,
+{
+    type Error = array::TryFromSliceError;
+
+    #[inline(always)]
+    fn try_from(value: PrimSliceMut<'a, P>) -> Result<Self, Self::Error> {
+        value.into_prims().try_into()
+    }
+}
+
+impl<'a, P, const N: usize> TryFrom<PrimSliceMut<'a, P>>
+    for (&'a mut [P; N], Option<&'a mut P::Padding>)
+where
+    P: PrimPod,
+{
+    type Error = array::TryFromSliceError;
+
+    #[inline(always)]
+    fn try_from(value: PrimSliceMut<'a, P>) -> Result<Self, Self::Error> {
+        let (slice, padding) = value.into_split();
+
+        slice.try_into().map(|array| (array, padding))
+    }
+}
+
+impl<'a, P, const N: usize> TryFrom<PrimSliceMut<'a, P>> for &'a [P; N]
+where
+    P: PrimPod,
+{
+    type Error = array::TryFromSliceError;
+
+    #[inline(always)]
+    fn try_from(value: PrimSliceMut<'a, P>) -> Result<Self, Self::Error> {
+        value.into_slice().try_into()
+    }
+}
+
+impl<'a, P, const N: usize> TryFrom<PrimSliceMut<'a, P>>
+    for (&'a [P; N], Option<&'a P::Padding>)
+where
+    P: PrimPod,
+{
+    type Error = array::TryFromSliceError;
+
+    #[inline(always)]
+    fn try_from(value: PrimSliceMut<'a, P>) -> Result<Self, Self::Error> {
+        let (slice, padding) = value.into_split();
+
+        (&*slice)
+            .try_into()
+            .map(|array| (array, padding.map(|pad| &*pad)))
+    }
+}
+
+impl<'a, P, const N: usize> TryFrom<PrimSliceMut<'a, P>> for [P; N]
+where
+    P: PrimPod,
+{
+    type Error = array::TryFromSliceError;
+
+    #[inline(always)]
+    fn try_from(value: PrimSliceMut<'a, P>) -> Result<Self, Self::Error> {
+        value.into_prims().try_into()
+    }
+}
+
+impl<'a, P> From<PrimSliceMut<'a, P>> for Vec<P>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: PrimSliceMut<'a, P>) -> Self {
+        value.into_prims().to_vec()
+    }
+}
+
+impl<'a, P> From<PrimSliceMut<'a, P>> for Box<[P]>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: PrimSliceMut<'a, P>) -> Self {
+        value.into_prims().into()
+    }
+}
+
+impl<'a, P> From<PrimSliceMut<'a, P>> for Rc<[P]>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: PrimSliceMut<'a, P>) -> Self {
+        value.into_prims().into()
+    }
+}
+
+impl<'a, P> From<PrimSliceMut<'a, P>> for Arc<[P]>
+where
+    P: PrimPod,
+{
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: PrimSliceMut<'a, P>) -> Self {
+        value.into_prims().into()
     }
 }
 
