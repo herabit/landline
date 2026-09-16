@@ -314,46 +314,87 @@ where
     ) -> Result<(RawSlice<P>, NonNull<[Byte]>)> {
         const { Self::ASSERT };
 
-        // SAFETY: The caller ensures this is sound.
-        let Some((headers, bytes)) =
-            (unsafe { split_at(bytes, size_of::<[SpaHeader; 2]>()) })
+        // NOTE: Fuck zero sized types. We're just not supporting them for now.
+        if P::SIZE == 0 {
+            return Err(ParsePodError::Other);
+        }
+
+        // SAFETY: The caller assures us that the underlying buffer is safe to read,
+        //         so if there's sufficient space, we can do reads.
+        let (pod_header, element_header, rest) =
+            match unsafe { split_at(bytes, size_of::<[SpaHeader; 2]>()) } {
+                // NOTE: There's enough room for the headers we need to look at!
+                Some((headers, rest)) => {
+                    // SAFETY: The caller ensures that again, the underlying buffer is initialized,
+                    //         and valid for reads.
+                    let [pod_header, element_header] =
+                        unsafe { headers.cast::<[SpaHeader; 2]>().as_ref() };
+
+                    (pod_header, element_header, rest)
+                },
+                // NOTE: There's not enough room for there to be two SPA headers, which we need
+                //       to parse a SPA Array.
+                None => {
+                    hint::cold_path();
+                    return Err(ParsePodError::InsufficientSpace);
+                },
+            };
+
+        // FIXME: Maybe move the element checks somewhere else?
+        if pod_header.kind != SpaKind::ARRAY
+            || element_header.kind != P::KIND
+            || element_header.size != P::SIZE
+        {
+            hint::cold_path();
+
+            // NOTE: The headers don't match what we expect, currently. We should give a more informative error,
+            //       but this is acceptable for now.
+            return Err(ParsePodError::UnexpectedValue);
+        }
+
+        let Some(array_size) =
+            pod_header.size.checked_sub(size_of::<SpaHeader>() as u32)
         else {
             hint::cold_path();
-            return Err(ParsePodError::InsufficientSpace);
+
+            // NOTE: If the total size of the POD cannot contain the header needed to describe what elements
+            //       lie within our array, then we have an invalid POD. We should probably emit more descriptive errors.
+            return Err(ParsePodError::UnexpectedValue);
         };
 
-        // SAFETY: The caller ensures it's sound to treat the first 16 bytes as headers.
-        let [pod_header, array_header] =
-            unsafe { headers.cast::<[SpaHeader; 2]>().as_ref() };
+        let Some(array_len) = checked_div_exact(array_size, P::SIZE) else {
+            hint::cold_path();
 
-        if P::SIZE == 0 {
-            // NOTE: We're just going to error on arrays of zero sized types. They don't make sense within the context of
-            //       pipewire, and yeah... Fuck it.
-            Err(ParsePodError::Other)
-        } else if pod_header.kind != SpaKind::ARRAY
-            || array_header.kind != P::KIND
-            || array_header.size != P::SIZE
-        {
-            // NOTE: We're confirming that we're actually parsing an array for our type, and that the child
-            //       size matches what we expect. If it doesn't, then it's not expected.
-            hint::cold_path();
-            Err(ParsePodError::UnexpectedValue)
-        } else if pod_header.size < (size_of::<SpaHeader>() as u32) {
-            // NOTE: We somehow don't have enough room for the array's header.
-            hint::cold_path();
-            Err(ParsePodError::InsufficientSpace)
-        } else if let array_size =
-            pod_header.size.strict_sub(size_of::<SpaHeader>() as u32)
-            && let Some(len) = checked_div_exact(array_size, P::SIZE)
-        {
-            // NOTE: Success!!!
-            // SAFETY: The caller ensures this is fine and we just did a bunch of checks.
-            unsafe { RawSlice::<P>::parse(bytes, len) }
-        } else {
-            // NOTE: AGH! Fuck more errors.
-            hint::cold_path();
-            Err(ParsePodError::InsufficientSpace)
-        }
+            // NOTE: Due to how we represent slices currently, we're unable to describe arrays in pipewire that
+            //       both need padding to align to 8-byte boundaries, but also have some amount of invalid elements
+            //       in between the last element (index `array_size / P::SIZE`) and the padded length.
+            //
+            //       We currently make the assumption, which is reasonable in my opinion, that the size of the array,
+            //       in bytes, is a multiple of the element size. There is no conceivable scenario where someone will,
+            //       supply us a packet that isn't like this.
+            //
+            //       If this does ever become an issue, it would require additional work and a potential change in how
+            //       we represent slices.
+            //
+            //       One such problematic scenario is let's say we have a `[u32; 2]` that was serialized with an `array_size`
+            //       of `9` instead of the expected `8`, then it'd need a padded size of `16`, which would clobber how we represent
+            //       `[u32; 3]` and `[u32; 4]`. We determine whether or not we have padding based on the evenness of the array length.
+            //
+            //       We could just round up to the next multiple of `P::SIZE`, permitting us to preserve the fact we have padding, and
+            //       preserving an accurate padded up size, but now the length would be inaccurate.
+            //
+            //       So, for now, we're just going to disallow arrays whose length aren't a multiple of their element type. This is,
+            //       frankly a reasonable decision, as I cannot conceive of a single scenario where a well-behaved pipewire program
+            //       would construct such an array.
+            //
+            //       We shall see if this is a justified choice, and if it isn't, I can think of a few ways of retaining the compact
+            //       representation without losing this information, potentially even without a public API change. But until this
+            //       becomes an issue, fuck this edge case, we won't support it.
+            return Err(ParsePodError::UnexpectedValue);
+        };
+
+        // SAFETY: We've verified all invariants that we care about for now, attempt to parse with the decoded length.
+        unsafe { RawSlice::<P>::parse(rest, array_len) }
     }
 
     /// Parse a raw primitive slice from the start of the elements,
@@ -1624,6 +1665,7 @@ fn test_fuck_me() {
             size: size_of::<Packet>()
                 .strict_sub(size_of::<SpaHeader>())
                 .strict_sub(size_of::<<super::SpaInt as PrimPod>::Padding>())
+                // .strict_sub(1)
                 .try_into()
                 .unwrap(),
         },
