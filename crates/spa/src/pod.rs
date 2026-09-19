@@ -9,7 +9,7 @@
 //! As such, this module is considered low-level. It just helps to avoid needless allocations and implicit
 //! recursion elsewhere.
 
-use std::fmt;
+use std::{convert::Infallible, fmt};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
@@ -319,4 +319,11 @@ pub enum ParsePodError {
 
     /// Some other, not yet named error.
     Other,
+}
+
+impl From<Infallible> for ParsePodError {
+    #[inline(always)]
+    fn from(value: Infallible) -> Self {
+        match value {}
+    }
 }
