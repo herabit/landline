@@ -283,52 +283,78 @@ where
     T: ?Sized,
     A: Access,
 {
+    /// Borrow a `T` with some access rights, without any checks.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that it the access rights granted are not misused
+    /// in any capacity that violates any invariants of the underlying `T`.
     #[inline(always)]
     #[must_use]
     pub const unsafe fn from_ref_unchecked(val: &T) -> &UnsafeBytes<T, A> {
+        // SAFETY: The caller ensures this is acceptable.
         unsafe {
             (&raw const *val as *const UnsafeBytes<T, A>).as_ref_unchecked()
         }
     }
 
+    /// Borrow a `T` with some access rights.
     #[inline(always)]
     #[must_use]
     pub const fn from_ref(val: &T) -> &UnsafeBytes<T, A>
     where
         A: CanAccess<T>,
     {
+        // SAFETY: We know that it's sound to access `T` for `A`.
         unsafe { UnsafeBytes::from_ref_unchecked(val) }
     }
 
+    /// Get the underlying `T`.
     #[inline(always)]
     #[must_use]
     pub const fn as_ref(&self) -> &T {
         &self.val
     }
 
+    /// Mutably borrow a `T` with some access rights, without any checks.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that it the access rights granted are not misused
+    /// in any capacity that violates any invariants of the underlying `T`.
     #[inline(always)]
     #[must_use]
     pub const unsafe fn from_mut_unchecked(
         val: &mut T
     ) -> &mut UnsafeBytes<T, A> {
+        // SAFETY: The caller ensures that it's safe to grant `A` to the `T`.
         unsafe { (&raw mut *val as *mut UnsafeBytes<T, A>).as_mut_unchecked() }
     }
 
+    /// Mutably borrow some `T` with some set of access rights.
     #[inline(always)]
     #[must_use]
     pub const fn from_mut(val: &mut T) -> &mut UnsafeBytes<T, A>
     where
         A: CanAccess<T>,
     {
+        // SAFETY: We know that `A` can access `T`.
         unsafe { UnsafeBytes::from_mut_unchecked(val) }
     }
 
+    /// Mutably borrow the underlying `T`.
     #[inline(always)]
     #[must_use]
     pub const fn as_mut(&mut self) -> &mut T {
         &mut self.val
     }
 
+    /// Without any checks, grant access rights to some underlying `T`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that it the access rights granted are not misused
+    /// in any capacity that violates any invariants of the underlying `T`.
     #[inline(always)]
     #[must_use]
     pub const unsafe fn new_unchecked(val: T) -> UnsafeBytes<T, A>
@@ -341,6 +367,7 @@ where
         }
     }
 
+    /// Grant access rights to some underlying `T`.
     #[inline(always)]
     #[must_use]
     pub const fn new(val: T) -> UnsafeBytes<T, A>
@@ -348,6 +375,7 @@ where
         T: Sized,
         A: CanAccess<T>,
     {
+        // SAFETY: We know that `A` has adequate rights to `T`.
         unsafe { UnsafeBytes::new_unchecked(val) }
     }
 
@@ -358,9 +386,11 @@ where
         T: Sized,
     {
         let this = ManuallyDrop::new(self);
+        // SAFETY: We know that `UnsafeBytes` shares a memory layout with `T`.
         unsafe { mem::transmute_copy(&this) }
     }
 
+    /// If the access rights grant read access, get the underlying memory as a byte buffer.
     #[inline(always)]
     #[must_use]
     pub const fn as_bytes(&self) -> &[Byte]
@@ -370,6 +400,7 @@ where
         as_bytes(self)
     }
 
+    /// If the access rights grant write access, get the underlying memory as a byte buffer.
     #[inline(always)]
     #[must_use]
     pub const fn as_bytes_mut(&mut self) -> &mut [Byte]

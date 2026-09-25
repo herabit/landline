@@ -2,7 +2,7 @@ use std::{fmt, num::TryFromIntError};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{PrimPod, kind::SpaKind, sealed},
+    pod::{AsPrimPod, AsPrimPodMut, PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA 64-bit signed integer.
@@ -80,3 +80,7 @@ unsafe impl PrimPod for SpaLong {
 
 unsafe impl AsBytes for SpaLong {}
 unsafe impl AsBytesMut for SpaLong {}
+
+// SAFETY: `SpaLong` is just an unaligned wrapper for `i64`.
+unsafe impl AsPrimPod<SpaLong> for i64 {}
+unsafe impl AsPrimPodMut<SpaLong> for i64 {}

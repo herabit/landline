@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::{
     mem::{AsBytes, AsBytesMut},
-    pod::{Byte, PrimPod, kind::SpaKind, sealed},
+    pod::{AsPrimPod, AsPrimPodMut, Byte, PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA 32-bit IEE-754 single precision floating point number.
@@ -55,3 +55,7 @@ unsafe impl PrimPod for SpaFloat {
 
 unsafe impl AsBytes for SpaFloat {}
 unsafe impl AsBytesMut for SpaFloat {}
+
+// SAFETY: `SpaFloat` is an unaligned wrapper for a `f32`.
+unsafe impl AsPrimPod<SpaFloat> for f32 {}
+unsafe impl AsPrimPodMut<SpaFloat> for f32 {}

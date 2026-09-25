@@ -2,7 +2,7 @@ use std::{borrow::Borrow, fmt, hash, hint::assert_unchecked, ops};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{PrimPod, kind::SpaKind, sealed},
+    pod::{AsPrimPod, AsPrimPodMut, PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA Boolean ***without the padding***.
@@ -477,3 +477,11 @@ ops! {
         BitXorAssign => bitxor_assign,
     ]
 }
+
+// SAFETY: A `SpaBool` is an unaligned 32-bit value.
+unsafe impl AsPrimPod<SpaBool> for u32 {}
+unsafe impl AsPrimPodMut<SpaBool> for u32 {}
+
+// SAFETY: A `SpaBool` is an unaligned 32-bit value.
+unsafe impl AsPrimPod<SpaBool> for i32 {}
+unsafe impl AsPrimPodMut<SpaBool> for i32 {}

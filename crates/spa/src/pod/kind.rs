@@ -177,6 +177,20 @@ impl SpaKind {
 }
 
 impl SpaKind {
+    /// Gets the [`SpaKind`] for a given primitive POD.
+    ///
+    /// This is equivalent to just doing `<P as PrimPod>::SPA_KIND`,
+    /// but maybe this is more readable.
+    #[inline(always)]
+    #[must_use]
+    #[track_caller]
+    pub const fn of<P>() -> SpaKind
+    where
+        P: super::PrimPod,
+    {
+        <P as super::PrimPod>::SPA_KIND
+    }
+
     /// Get the size of this SPA kind, if it is a known constant (a primitive SPA).
     #[inline(always)]
     #[must_use]

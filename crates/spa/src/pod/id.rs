@@ -2,7 +2,7 @@ use std::{fmt, num::TryFromIntError};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{PrimPod, kind::SpaKind, sealed},
+    pod::{AsPrimPod, AsPrimPodMut, PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA id ***without the padding***.
@@ -62,3 +62,7 @@ unsafe impl PrimPod for SpaId {
 
 unsafe impl AsBytes for SpaId {}
 unsafe impl AsBytesMut for SpaId {}
+
+// SAFETY: `SpaId` is just an unaligned wrapper for a `u32`.
+unsafe impl AsPrimPod<SpaId> for u32 {}
+unsafe impl AsPrimPodMut<SpaId> for u32 {}

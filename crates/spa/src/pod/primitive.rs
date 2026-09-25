@@ -35,11 +35,143 @@ pub unsafe trait PrimPad:
 impl sealed::PrimPad for [Byte; 0] {}
 impl sealed::PrimPad for [Byte; 4] {}
 
+/// This is only implemented for `[Byte; 0]` and `[Byte; 4]`.
 unsafe impl<const N: usize> PrimPad for [Byte; N]
 where
     [Byte; N]: sealed::PrimPad + Default,
 {
     const DEFAULT: Self = [Byte::new(0); N];
+}
+
+/// Just a helper struct detailing the size, stride, and padding of the primitive types.
+struct PrimLayout {
+    /// The size of the primitive, in bytes, without padding to a multiple of eight.
+    ///
+    /// This is the size we expect to find in headers.
+    size: u32,
+    /// This is the size of the primitive, rounded up to a multiple of eight.
+    stride: u32,
+    /// This is the difference between the size and stride.
+    padding: u32,
+}
+
+impl PrimLayout {
+    #[track_caller]
+    const fn of<P>() -> &'static PrimLayout
+    where
+        P: PrimPod,
+    {
+        &const {
+            assert!(
+                align_of::<P>() == 1,
+                "primitive PODs must have an alignment of one"
+            );
+
+            assert!(
+                align_of::<P::Padding>() == 1,
+                "the padding of primitive PODs must have an alignment of one"
+            );
+
+            let size = {
+                let size = P::SPA_KIND
+                    .expected_size()
+                    .expect("all primitive PODs have a known, constant size");
+
+                assert!(
+                    size as usize == size_of::<P>(),
+                    "the expected size of a POD must match its actual size",
+                );
+
+                assert!(
+                    size == 0 || size.is_power_of_two(),
+                    "the size of a primitive POD must be zero or a power of two",
+                );
+
+                // NOTE: Probably not needed, but I'd like to check anyways.
+                assert!(
+                    size.is_multiple_of(4),
+                    "all known primitive PODs have a size that is a multiple of four",
+                );
+
+                size
+            };
+
+            let stride = {
+                let stride = size.checked_next_multiple_of(8).expect(
+                    "all primitive PODs have a constant size which \
+                     can be rounded up to a multiple of eight\
+                    ",
+                );
+
+                let actual_stride = size_of::<P>()
+                    .checked_add(size_of::<P::Padding>())
+                    .expect("overflow when calculating the actual stride");
+
+                assert!(
+                    stride as usize == actual_stride,
+                    "the stride must be equal to the padded size of the primitive POD",
+                );
+
+                assert!(
+                    stride == 0 || stride.is_power_of_two(),
+                    "the stride of a primitive POD must be zero or a power of two",
+                );
+
+                // NOTE: This is needless, as we create it with `checked_next_multiple_of(8)`, but whatever.
+                assert!(
+                    stride.is_multiple_of(8),
+                    "the stride of a primitive POD must be a multiple of eight (otherwise, what's the point, lol)",
+                );
+
+                stride
+            };
+
+            let padding = {
+                let padding = stride.checked_sub(size).expect(
+                    "somehow we've calculated a size larger than the stride",
+                );
+
+                assert!(
+                    padding as usize == size_of::<P::Padding>(),
+                    "the size of the expected padding be equal to the actual size of the padding",
+                );
+
+                assert!(
+                    padding == 0 || padding.is_power_of_two(),
+                    "the size of the padding for all known primitive PODs is either zero, or a power of two",
+                );
+
+                assert!(
+                    padding.is_multiple_of(4),
+                    "the size of the padding for all known primitive PODs are multiples of four",
+                );
+
+                assert!(
+                    padding <= 4,
+                    "the size of the padding for all known primitive PODs is less than or equal to four",
+                );
+
+                assert!(
+                    matches!(
+                        (size, padding),
+                        | (0, 0) // Zero sized primitives.
+                        | (4, 4) // u32ish primitives.
+                        | (8, 0) // u64ish primitives.
+                        | (16, 0) // u128ish primitives.
+                    ),
+                    "we've encountered an unknown size/padding pair",
+                );
+
+                padding
+            };
+
+            PrimLayout {
+                size,
+                stride,
+                padding,
+            }
+        }
+    }
 }
 
 /// A trait for POD types that are considered primitive. Primitive PODs are those with a fixed size known at compile time,
@@ -62,7 +194,7 @@ where
 ///
 /// All POD types must have an alignment of `1`.
 ///
-/// Likely some other stuff that needs to be hashed out.
+/// Likely some other stuff that needs to be hashed out, hence us keeping this permanently sealed.
 pub unsafe trait PrimPod:
     'static
     + Copy
@@ -78,6 +210,8 @@ pub unsafe trait PrimPod:
     /// # Safety
     ///
     /// This must have an alignment of `1`.
+    ///
+    /// Other things too, hence why we keep this permanently sealed.
     type Padding: PrimPad;
 
     /// This is a default value for `Self`.
@@ -90,64 +224,27 @@ pub unsafe trait PrimPod:
     const SPA_KIND: SpaKind;
 
     /// The [`SpaKind`] of this type, but as a [`u32`].
+    ///
+    /// This is equivalent to `Self::SPA_KIND as u32`.
     const KIND: u32 = Self::SPA_KIND as u32;
 
     /// The expected size of this type.
-    const SIZE: u32 = {
-        let size = Self::SPA_KIND
-            .expected_size()
-            .expect("all primitive PODs have a constant size");
-
-        assert!(
-            size as usize == size_of::<Self>(),
-            "the expected size must match the actual size"
-        );
-
-        size
-    };
+    ///
+    /// This is equivalent to `Self::SPA_KIND.expected_size().unwrap()`.
+    const SIZE: u32 = PrimLayout::of::<Self>().size;
 
     /// The expected size with padding.
-    const STRIDE: u32 = {
-        let stride = Self::SIZE.checked_next_multiple_of(8).expect(
-            "all primitive PODs have a constant size which can be rounded up to a multiple of 8",
-        );
-
-        assert!(
-            size_of::<PrimBody<Self>>() == stride as usize,
-            "the stride must be equal to the size of `PrimBody<Self>`"
-        );
-
-        assert!(stride % 8 == 0, "the stride must be divisible by eight");
-
-        let padding_size = stride.strict_sub(Self::SIZE);
-
-        assert!(
-            size_of::<Self::Padding>() == padding_size as usize,
-            "the size of the padding is not equal to `stride - size`",
-        );
-
-        assert!(
-            padding_size % 4 == 0 && padding_size <= 4,
-            "the size of the padding must be zero or four",
-        );
-
-        assert!(
-            matches!(
-                (Self::SIZE, padding_size),
-                | (0, 0) // Zero sized primitives are known.
-                | (4, 4) // u32-ish sized primitives are known.
-                | (8, 0) // u64-ish sized primitives are known.
-                | (16, 0) // u128-ish sized primitives are known.
-            ),
-            "we're not aware of this padding/size pair, and therefore the stride."
-        );
-
-        stride
-    };
+    ///
+    /// This is equivalent to `Self::SIZE.checked_next_multiple_of(8).unwrap()`.
+    const STRIDE: u32 = PrimLayout::of::<Self>().stride;
 
     /// The size of the padding.
-    const PADDING_SIZE: u32 = Self::STRIDE.strict_sub(Self::SIZE);
+    ///
+    /// This is equivalent to `Self::STRIDE.strict_sub(Self::SIZE)`.
+    const PADDING_SIZE: u32 = PrimLayout::of::<Self>().padding;
 }
+
+// const A: () = assert!(<super::SpaBool as PrimPod>::SIZE != 4);
 
 /// A primitive SPA POD without the header, but containing the padding.
 ///
@@ -170,32 +267,12 @@ where
     /// A default [`PrimBody`], containing the default value for `P` and the default padding.
     pub const DEFAULT: PrimBody<P> = PrimBody::new(P::DEFAULT);
 
-    #[inline(always)]
-    #[track_caller]
-    pub(crate) const fn ensure_layout() {
-        const {
-            assert!(
-                align_of::<P>() == 1,
-                "primitive pods are always 1-byte aligned"
-            )
-        };
-
-        const {
-            assert!(
-                align_of::<P::Padding>() == 1,
-                "primitive pod paddings are always 1-byte aligned"
-            )
-        };
-
-        // Run the checks in these constants.
-        let _ = const { (P::SIZE, P::PADDING_SIZE, P::STRIDE) };
-    }
-
     /// Get a reference to the corresponding value and padding.
     #[inline(always)]
     #[must_use]
     pub const fn split(&self) -> (&P, &P::Padding) {
-        Self::ensure_layout();
+        // NOTE: This just does compile time checks for us.
+        const { _ = P::SIZE };
 
         // SAFETY: We know `P` and `P::Padding` to be 1-byte aligned.
         unsafe {
@@ -210,7 +287,8 @@ where
     #[inline(always)]
     #[must_use]
     pub const fn split_mut(&mut self) -> (&mut P, &mut P::Padding) {
-        Self::ensure_layout();
+        // NOTE: This just does compile time checks for us.
+        const { _ = P::SIZE };
 
         // SAFETY: We know `P` and `P::Padding` to be 1-byte aligned.
         unsafe {
@@ -253,7 +331,8 @@ where
     #[inline(always)]
     #[must_use]
     pub const fn new(value: P) -> PrimBody<P> {
-        Self::ensure_layout();
+        // NOTE: This just does compile time checks for us.
+        const { _ = P::SIZE };
 
         PrimBody {
             value,
@@ -368,3 +447,51 @@ where
 
 unsafe impl<P> AsBytes for PrimBody<P> where P: PrimPod {}
 unsafe impl<P> AsBytesMut for PrimBody<P> where P: PrimPod {}
+
+/// Trait for types that can be immutably represented as some primitive POD.
+///
+/// # Safety
+///
+/// Implementors must have the same size as the primitive POD they can be coerced into.
+/// The coercions must also be safe to do inversely, given that the primitive POD is in fact,
+/// adequately aligned. So if we construct a [`SpaDouble`] from a [`f64`], given the value is sufficiently
+/// aligned, it must also be safe to transmute back into a [`f64`].
+///
+/// This being implemented does ***not*** imply that it is safe to reinterpret mutably.
+/// For that, see [`AsPrimPodMut`].
+///
+/// Implementors are allowed to have stricter alignment requirements than their PODs.
+///
+/// Probably some other things, potentially avoid implementing this yourself, until I hash out the
+/// exact invariants more at a later date.
+///
+pub unsafe trait AsPrimPod<P>: AsBytes
+where
+    P: PrimPod,
+{
+}
+
+// SAFETY: It's safe to reinterpret a POD as itself.
+unsafe impl<P> AsPrimPod<P> for P where P: PrimPod {}
+
+/// Trait for types that can be mutabled represented as some primitive POD.
+///
+/// # Safety
+///
+/// Pretty much the same as [`AsPrimPod`], except having this trait implemented
+/// does not imply that it is sound to immutably reinterpret.
+///
+/// Avoid implementing this until I fully hash out the details of the invariants,
+/// I just need to get moving on my project. This is pre-alpha software, don't expect
+/// stability, or use this at all. I need to fully flesh things out significantly. But until then,
+/// I'm focusing on getting things operational.
+///
+/// Seriously, do not rely on my code, like, ever.
+pub unsafe trait AsPrimPodMut<P>: AsBytesMut
+where
+    P: PrimPod,
+{
+}
+
+// SAFETY: It's safe to reinterpret a POD as itself.
+unsafe impl<P> AsPrimPodMut<P> for P where P: PrimPod {}

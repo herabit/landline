@@ -2,7 +2,7 @@ use std::{fmt, num::TryFromIntError};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte},
-    pod::{PrimPod, kind::SpaKind, sealed},
+    pod::{AsPrimPod, AsPrimPodMut, PrimPod, kind::SpaKind, sealed},
 };
 
 /// A SPA 32-bit signed integer.
@@ -71,3 +71,7 @@ unsafe impl PrimPod for SpaInt {
 
 unsafe impl AsBytes for SpaInt {}
 unsafe impl AsBytesMut for SpaInt {}
+
+// SAFETY: `SpaInt` is just an unaligned wrapper of an `i32`.
+unsafe impl AsPrimPod<SpaInt> for i32 {}
+unsafe impl AsPrimPodMut<SpaInt> for i32 {}

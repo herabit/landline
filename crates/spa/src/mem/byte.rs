@@ -1,6 +1,7 @@
 use std::{
     borrow::{Borrow, BorrowMut},
     cell::{Cell, UnsafeCell},
+    ffi::CStr,
     fmt,
     marker::PhantomData,
     mem::{ManuallyDrop, MaybeUninit},
@@ -306,11 +307,15 @@ unsafe impl AsBytesMut for () {}
 // NOTE: `AsBytesMut` cannot be implemented as we may invalidate the underlying UTF-8.
 unsafe impl AsBytes for str {}
 
+// NOTE: `AsBytesMut` cannot be implemented as `CStr` requires the last byte to contain a NUL,
+//       and all preceding bytes to not be NUL.
+unsafe impl AsBytes for CStr {}
+
 // NOTE: `AsBytesMut` cannot be implemented as `char` imposes additional bit validity constraints.
 unsafe impl AsBytes for char {}
 unsafe impl AsBytes for NonZero<char> {}
 
-// NOTE: `AsBytesMut` cannot be implemented as `bool` imposees additional bit validity constraints.
+// NOTE: `AsBytesMut` cannot be implemented as `bool` imposes additional bit validity constraints.
 unsafe impl AsBytes for bool {}
 
 unsafe impl AsBytes for f32 {}
