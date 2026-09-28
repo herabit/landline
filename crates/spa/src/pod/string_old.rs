@@ -1,4 +1,11 @@
-use std::{ffi::CStr, hint, num::NonZero, ptr, slice, str::Utf8Error};
+use std::{
+    borrow::{Borrow, BorrowMut, Cow},
+    ffi::CStr,
+    fmt, hint,
+    num::NonZero,
+    ptr, slice,
+    str::Utf8Error,
+};
 
 use crate::{
     mem::{AsBytes, AsBytesMut, Byte, as_bytes, as_bytes_mut},
@@ -144,10 +151,20 @@ impl NulSearch {
 /// A NUL-terminated string that can be serialized as or deserialized from a SPA POD.
 ///
 /// This has no guarantees of encoding besides its size in bytes being less than or equal to
-/// [`MAX_SIZE`], and that it contains no interior NULs.
+/// [`super::MAX_SIZE`], and that it contains no interior NULs.
 ///
 /// It's pretty similar to [`CStr`], however we have a fixed representation, whereas [`CStr`] has
 /// a representation that is subject to change when/if the type system advances sufficiently.
+///
+/// # Differences from [`CStr`]
+///
+/// Our method naming scheme differs quite a bit from [`CStr`]... They assume, by default,
+/// that you don't want to utilize the NUL-terminator, and instead make it opt-in when getting
+/// the underlying memory of the [`CStr`].
+///
+/// We differ in that, we assume you ***want*** it, and the only circumstances where we don't
+/// give it to you, is in our [`fmt::Display`] and [`fmt::Debug`] implementations, as emitting
+/// a NUL, particularly with [`fmt::Display`], may cause unexpected behavior.
 ///
 /// # Safety
 ///
@@ -196,6 +213,107 @@ impl SpaStr {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns an empty SPA string.
+    #[inline(always)]
+    #[must_use]
+    pub const fn empty() -> &'static SpaStr {
+        const {
+            match SpaStr::from_c_str(c"") {
+                Ok(spa_str) => spa_str,
+                Err(_err) => unreachable!(),
+            }
+        }
+    }
+
+    /// Attempt to create a SPA string from some [`Byte`] buffer, provided some
+    /// NUL search method.
+    ///
+    /// If no NUL search method is provided, we default to [`NulSearch::WithNul`].
+    pub const fn from_bytes<B>(
+        bytes: &B,
+        search_method: Option<NulSearch>,
+    ) -> Result<&SpaStr, PodError>
+    where
+        B: AsBytes + ?Sized,
+    {
+        let bytes = as_bytes(bytes);
+
+        let search_method = match search_method {
+            Some(search_method) => search_method,
+            None => NulSearch::WithNul,
+        };
+
+        match search_method.search(bytes) {
+            Ok(nul_pos)
+                if nul_pos.strict_add(1) <= super::MAX_SIZE as usize =>
+            {
+                // todo!()
+                let len = nul_pos.strict_add(1);
+                let (string, _) = bytes.split_at(len);
+
+                // SAFETY: We know that `string` is a NUL-terminated string, and that it does
+                //         not exceed `MAX_SIZE` bytes.
+                Ok(unsafe {
+                    (&raw const *string as *const SpaStr).as_ref_unchecked()
+                })
+            },
+            Ok(_nul_pos) => {
+                hint::cold_path();
+
+                Err(PodError::InvalidSize)
+            },
+            Err(err) => {
+                hint::cold_path();
+
+                Err(err)
+            },
+        }
+    }
+
+    /// Attempt to create a mutable SPA string from some [`Byte`] buffer, provided some
+    /// NUL search method.
+    ///
+    /// If no NUL search method is provided, we default to [`NulSearch::WithNul`].
+    pub const fn from_bytes_mut<B>(
+        bytes: &mut B,
+        search_method: Option<NulSearch>,
+    ) -> Result<&mut SpaStr, PodError>
+    where
+        B: AsBytesMut + ?Sized,
+    {
+        let bytes = as_bytes_mut(bytes);
+
+        let search_method = match search_method {
+            Some(search_method) => search_method,
+            None => NulSearch::WithNul,
+        };
+
+        match search_method.search_mut(bytes) {
+            Ok(nul_pos)
+                if nul_pos.strict_add(1) <= super::MAX_SIZE as usize =>
+            {
+                let len = nul_pos.strict_add(1);
+                let (string, _) = bytes.split_at_mut(len);
+
+                // SAFETY: We know that `string` is a NUL-terminated string, and that it does
+                //         not exceed `MAX_SIZE` bytes.
+                Ok(unsafe {
+                    (&raw mut *string as *mut SpaStr).as_mut_unchecked()
+                })
+            },
+            Ok(_nul_pos) => {
+                hint::cold_path();
+
+                Err(PodError::InvalidSize)
+            },
+            Err(err) => {
+                hint::cold_path();
+
+                Err(err)
+            },
+        }
     }
 
     /// Returns the underlying slice of [`Byte`]s, including the NUL-terminator.
@@ -291,6 +409,28 @@ impl SpaStr {
         std::str::from_utf8_mut(Byte::as_u8_slice_mut(unsafe {
             self.as_bytes_mut()
         }))
+    }
+
+    /// Converts this SPA string, including the NUL-terminator,
+    /// into a `Cow<str>`, lossily.
+    ///
+    /// See [`String::from_utf8_lossy`] for more details.
+    #[inline(always)]
+    #[must_use]
+    #[track_caller]
+    pub fn to_string_lossy(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(Byte::as_u8_slice(self.as_bytes()))
+    }
+
+    /// Converts this SPA string, excluding the NUL-terminator,
+    /// into a `Cow<str>`, lossily.
+    ///
+    /// See [`String::from_utf8_lossy`] for more details.
+    #[inline(always)]
+    #[must_use]
+    #[track_caller]
+    pub fn to_body_string_lossy(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(Byte::as_u8_slice(self.as_body()))
     }
 
     /// Attempts to convert the underlying buffer to a [`str`], excluding the NUL-terminator.
@@ -400,3 +540,156 @@ impl SpaStr {
 // SAFETY: It is safe to borrow the underlying bytes immutably, but not mutably, due to the possibility
 //         of the insertion or removal of NUL-terminators.
 unsafe impl AsBytes for SpaStr {}
+
+impl Default for &SpaStr {
+    #[inline(always)]
+    fn default() -> Self {
+        SpaStr::empty()
+    }
+}
+
+impl fmt::Debug for SpaStr {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        // FIXME: Implement this without an allocation.
+        str::fmt(&self.to_body_string_lossy(), f)
+    }
+}
+
+impl fmt::Display for SpaStr {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        // FIXME: Implement this without an allocation.
+        str::fmt(&self.to_body_string_lossy(), f)
+    }
+}
+
+impl AsRef<CStr> for SpaStr {
+    #[inline(always)]
+    fn as_ref(&self) -> &CStr {
+        self.as_c_str()
+    }
+}
+
+impl AsMut<CStr> for SpaStr {
+    #[inline(always)]
+    fn as_mut(&mut self) -> &mut CStr {
+        self.as_c_str_mut()
+    }
+}
+
+impl Borrow<CStr> for SpaStr {
+    #[inline(always)]
+    fn borrow(&self) -> &CStr {
+        self.as_c_str()
+    }
+}
+
+impl BorrowMut<CStr> for SpaStr {
+    #[inline(always)]
+    fn borrow_mut(&mut self) -> &mut CStr {
+        self.as_c_str_mut()
+    }
+}
+
+impl<'a> From<&'a SpaStr> for &'a CStr {
+    #[inline(always)]
+    fn from(value: &'a SpaStr) -> Self {
+        value.as_c_str()
+    }
+}
+
+impl<'a> TryFrom<&'a CStr> for &'a SpaStr {
+    type Error = PodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a CStr) -> Result<Self, Self::Error> {
+        SpaStr::from_c_str(value)
+    }
+}
+
+impl<'a> From<&'a mut SpaStr> for &'a mut CStr {
+    #[inline(always)]
+    fn from(value: &'a mut SpaStr) -> Self {
+        value.as_c_str_mut()
+    }
+}
+
+impl<'a> TryFrom<&'a mut CStr> for &'a mut SpaStr {
+    type Error = PodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a mut CStr) -> Result<Self, Self::Error> {
+        SpaStr::from_c_str_mut(value)
+    }
+}
+
+impl<'a> TryFrom<&'a SpaStr> for &'a str {
+    type Error = Utf8Error;
+
+    #[inline(always)]
+    fn try_from(value: &'a SpaStr) -> Result<Self, Self::Error> {
+        value.to_str()
+    }
+}
+
+impl<'a> TryFrom<&'a str> for &'a SpaStr {
+    type Error = PodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        SpaStr::from_bytes(value, None)
+    }
+}
+
+impl<'a, B> TryFrom<&'a [B]> for &'a SpaStr
+where
+    B: AsBytes,
+{
+    type Error = PodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a [B]) -> Result<Self, Self::Error> {
+        SpaStr::from_bytes(value, None)
+    }
+}
+
+impl<'a, B, const N: usize> TryFrom<&'a [B; N]> for &'a SpaStr
+where
+    B: AsBytes,
+{
+    type Error = PodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a [B; N]) -> Result<Self, Self::Error> {
+        SpaStr::from_bytes(value, None)
+    }
+}
+
+impl<'a, B> TryFrom<&'a mut [B]> for &'a mut SpaStr
+where
+    B: AsBytesMut,
+{
+    type Error = PodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a mut [B]) -> Result<Self, Self::Error> {
+        SpaStr::from_bytes_mut(value, None)
+    }
+}
+
+impl<'a, B, const N: usize> TryFrom<&'a mut [B; N]> for &'a mut SpaStr
+where
+    B: AsBytesMut,
+{
+    type Error = PodError;
+
+    #[inline(always)]
+    fn try_from(value: &'a mut [B; N]) -> Result<Self, Self::Error> {
+        SpaStr::from_bytes_mut(value, None)
+    }
+}

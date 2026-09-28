@@ -2,12 +2,13 @@ use std::{
     array,
     borrow::{Borrow, BorrowMut},
     fmt, hint,
+    num::NonZero,
     ops::{Index, IndexMut},
     ptr, slice,
 };
 
 use crate::{
-    mem::{AsBytes, AsBytesMut, Byte},
+    mem::{AsBytes, AsBytesMut, Byte, as_bytes},
     pod::{
         AsPrimPod, AsPrimPodMut, PodError, PrimPod, SpaHeader, kind::SpaKind,
     },
@@ -165,6 +166,96 @@ where
         }
     }
 
+    /// Attempt to encode a SPA slice.
+    ///
+    /// # Returns
+    ///
+    /// Returns the amount of bytes written, including headers, upon success.
+    ///
+    /// # Safety
+    ///
+    /// The amount is guaranteed to be less than or equal to the length of the output buffer.
+    /// You can rely on this.
+    #[inline(always)]
+    pub const fn encode(
+        &self,
+        output: &mut [Byte],
+    ) -> Result<NonZero<u32>, PodError> {
+        // NOTE: This is the size including element header.
+        let size = self
+            .len()
+            .strict_mul(P::SIZE)
+            .strict_add(size_of::<SpaHeader>() as u32);
+
+        // NOTE: This is the above size, but with the array header, and then with additional padding.
+        let total_size = NonZero::new(
+            size.strict_add(size_of::<SpaHeader>() as u32)
+                .next_multiple_of(8),
+        )
+        .expect("the total size should always be nonzero");
+
+        let Some((output, _)) =
+            output.split_at_mut_checked(total_size.get() as usize)
+        else {
+            hint::cold_path();
+
+            return Err(PodError::InsufficientSpace);
+        };
+
+        let (headers, body) = output
+            .split_at_mut_checked(size_of::<[SpaHeader; 2]>())
+            .expect("for some reason there wasn't enough space");
+
+        // Insert the headers.
+        headers.copy_from_slice(as_bytes(&[
+            // Array header
+            SpaHeader {
+                size,
+                kind: SpaKind::ARRAY,
+            },
+            // Element header
+            SpaHeader {
+                size: P::SIZE,
+                kind: P::KIND,
+            },
+        ]));
+
+        // Before we write the body, we're going to overwrite the last eight bytes to avoid
+        // leaking any memory that was previously stored in this buffer, in the case we have padding.
+        //
+        // This should be less expensive than a `memset` on the last `n` bytes, where `n` is the padding
+        // we need to align to eight. This will probably get reduced to a single, or multiple
+        // word-sized writes.
+        //
+        // There may be a better way of doing this, but this will suffice for now.
+        //
+        // We only do this for types which aren't a multiple of eight in size, as those with sizes
+        // that are multiples of eight don't need padding.
+        if !P::SIZE.is_multiple_of(8)
+            && let Some(chunk) = body.last_chunk_mut::<8>()
+        {
+            *chunk = [Byte::new(0); 8];
+        }
+
+        // SAFETY: We know for a fact that `body` can contain `self`. If it's empty, then so too
+        //         is this slice, as two headers in the total size both are multiples of eight,
+        //         and summing two multiples of eight is, another multiple of eight.
+        //
+        //         If `P::SIZE` is a multiple of eight, then we know the length of `body` is equal to
+        //         the byte size of `self`.
+        //
+        //         If `P::SIZE` is not a multiple of eight, then we know the length of `body` is equal to
+        //         the byte size of `self`, plus any additional padding.
+        let (body, _pad_that_is_already_over_written) = unsafe {
+            body.split_at_mut_unchecked(self.len().strict_mul(P::SIZE) as usize)
+        };
+
+        // Copy over the slice itself.
+        body.copy_from_slice(as_bytes(self));
+
+        Ok(total_size)
+    }
+
     /// Attempt to decode a SPA slice from a byte buffer.
     #[inline(always)]
     pub const fn decode(bytes: &[Byte]) -> Result<(&Self, &[Byte]), PodError> {
@@ -257,7 +348,7 @@ where
             } else {
                 hint::cold_path();
 
-                // Malformed packet, how fun.
+                // Malformed packet, how funother.
                 return Err(PodError::InvalidSize);
             }
         };
