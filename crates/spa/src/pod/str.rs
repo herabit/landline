@@ -1,4 +1,17 @@
-use std::{ffi::CStr, hint, num::NonZero};
+use std::{
+    any::TypeId,
+    array::TryFromSliceError,
+    borrow::Cow,
+    collections::VecDeque,
+    ffi::{CStr, CString},
+    fmt, hint, iter,
+    mem::{self, MaybeUninit},
+    num::NonZero,
+    ops::Deref,
+    ptr::NonNull,
+    rc::Rc,
+    sync::Arc,
+};
 
 use crate::mem::{AsBytes, AsBytesMut, Byte, as_bytes, as_bytes_mut};
 
@@ -15,170 +28,664 @@ use crate::mem::{AsBytes, AsBytesMut, Byte, as_bytes, as_bytes_mut};
 pub struct SpaStr([u8]);
 
 impl SpaStr {
-    /// Returns the underlying byte buffer, excluding any NUL terminator.
-    #[inline(always)]
+    /// Returns whether this string contains a NUL terminator.
+    #[inline]
     #[must_use]
-    pub const fn as_bytes(&self) -> &[u8] {
-        let len = self.len();
-
-        self.0.split_at(len as usize).0
+    #[doc(alias = "is_nul_terminated")]
+    pub const fn has_nul(&self) -> bool {
+        match self.0.len().checked_sub(self.as_bytes().len()).unwrap() {
+            0 => false,
+            1 => true,
+            _ => panic!("edge case detected!"),
+        }
     }
 
-    /// Returns the underlying byte buffer mutably, excluding any NUL terminator.
+    /// Returns the length of the string, excluding any NUL terminator.
+    #[inline]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.as_bytes().len()
+    }
+
+    /// Returns whether this string is empty.
+    ///
+    /// This does not include the NUL terminator, if there is any.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.as_bytes().is_empty()
+    }
+
+    /// Returns the length of the string, including a NUL terminator.
+    ///
+    /// # Validity
+    ///
+    /// This is advisory, the underlying string may not actually have a NUL
+    /// terminator.
+    #[inline]
+    #[must_use]
+    pub const fn len_with_nul(&self) -> NonZero<usize> {
+        let len_with_nul = self.len().checked_add(1).unwrap();
+
+        assert!(
+            len_with_nul <= super::MAX_SIZE as usize,
+            "something has gone horribly wrong",
+        );
+
+        NonZero::new(len_with_nul).unwrap()
+    }
+
+    /// Returns the underlying string, excluding any NUL terminator.
+    #[inline]
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8] {
+        // SAFETY: We know that the source buffer is at most `MAX_SIZE` bytes.
+        unsafe {
+            hint::assert_unchecked(self.0.len() <= super::MAX_SIZE as usize)
+        };
+
+        // NOTE: Fancy pattern matching to remove the trailing NUL, but only if there is one.
+        let (body, _nul) = {
+            let dec_value = match &self.0 {
+                // NOTE: The total length is at least one, decrementing cannot overflow.
+                [.., 0x00] => 1_usize,
+                // NOTE: Either an empty buffer or one without a NUL.
+                [] | [.., _] => 0_usize,
+            };
+
+            // SAFETY: When there's no NUL, `dec_value` is zero, so no overflow. When there is a NUL,
+            //         `dec_value` is one, and since we need at least one byte to store the NUL,
+            //         decrementing the language too, will not overflow.
+            let nul_pos = unsafe { self.0.len().unchecked_sub(dec_value) };
+
+            // SAFETY: We know that `nul_pos` is at most `self.0.len()`.
+            //
+            //         `split_at` and `split_at_unchecked`, and the above subtraction
+            //         all for some reason fail to establish this relationship.
+            unsafe { hint::assert_unchecked(nul_pos <= self.0.len()) };
+
+            // NOTE: No need for the unsafe version, the above assertion does the work for us,
+            //       and more. Honestly, `split_at_unchecked` would be better as a `split_at_checked.unwrap()`.
+            let (body, nul) = self.0.split_at(nul_pos);
+
+            // SAFETY: We know that the length of the body is at most `MAX_SIZE - 1`, as we need
+            //         one byte to store the NUL.
+            unsafe {
+                hint::assert_unchecked(body.len() < super::MAX_SIZE as usize)
+            };
+
+            // SAFETY: We know that the body's length when incremented is at most `MAX_SIZE`.
+            unsafe {
+                hint::assert_unchecked(
+                    body.len().unchecked_add(1) <= super::MAX_SIZE as usize,
+                )
+            };
+
+            // SAFETY: We know that the body's length, incremented, is at most one byte more than
+            //         the buffer length.
+            unsafe {
+                hint::assert_unchecked(
+                    body.len().unchecked_add(1).unchecked_sub(self.0.len())
+                        <= 1,
+                )
+            };
+
+            // SAFETY: Same as above, more or less.
+            unsafe {
+                hint::assert_unchecked(
+                    body.len().unchecked_add(1) >= self.0.len(),
+                )
+            };
+
+            if let [nul] = nul {
+                // SAFETY: If the nul buffer isn't empty, then we know that byte is `0`.
+                unsafe { hint::assert_unchecked(*nul == 0x00) };
+
+                // SAFETY: Same as the above, but for the last element in the source buffer.
+                unsafe {
+                    hint::assert_unchecked(
+                        self.0.last().copied().unwrap_unchecked() == 0x00,
+                    )
+                };
+
+                // SAFETY: We know they're the same address.
+                unsafe {
+                    hint::assert_unchecked(
+                        (&raw const *nul).offset_from_unsigned(
+                            self.0.last().unwrap_unchecked(),
+                        ) == 0,
+                    )
+                }
+            }
+
+            unsafe {
+                hint::assert_unchecked(
+                    body.len().unchecked_add(1) - 1 == body.len(),
+                )
+            };
+
+            (body, nul)
+        };
+
+        body
+    }
+
+    /// Returns the underlying string mutably, excluding any NUL terminator.
     ///
     /// # Safety
     ///
-    /// The caller must ensure that no NULs are within the buffer when the borrow ends.
+    /// The caller must ensure that the buffer contains no NULs when the borrow ends.
     ///
-    /// If you need a safe variant of this, see [`SpaStr::as_nonzer_bytes_mut`].
-    #[inline(always)]
+    /// If you need a safe variant, see [`SpaStr::as_nonzero_bytes_mut`].
+    #[inline]
     #[must_use]
     #[allow(unused_unsafe)]
     pub const unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
-        let len = self.len();
+        let len = self.as_bytes().len();
 
-        // SAFETY: The caller ensures this is sound.
-        unsafe { self.0.split_at_mut(len as usize).0 }
+        // SAFETY: The caller ensures this is safe.
+        unsafe { self.0.split_at_mut(len).0 }
     }
 
-    /// Returns the underlying byte buffer, excluding any NUL terminator,
-    /// but with [`NonZero`] bytes instead.
-    #[inline(always)]
+    /// Returns the underlying string as a slice of [`NonZero`] bytes, excluding any NUL terminator.
+    #[inline]
     #[must_use]
     pub const fn as_nonzero_bytes(&self) -> &[NonZero<u8>] {
-        // SAFETY: We know for a fact that the bytes before the NUL, if any,
-        //         are nonzero.
+        // SAFETY: We know that the slice up to the NUL terminator, if any,
+        //         is entirely nonzero.
         unsafe {
             (&raw const *self.as_bytes() as *const [NonZero<u8>])
                 .as_ref_unchecked()
         }
     }
 
-    /// Returns the underlying byte buffer mutably, excluding any NUL terminator,
-    /// but with [`NonZero`] bytes instead.
-    #[inline(always)]
+    /// Returns the underlying string as a mutable slice of [`NonZero`] bytes, excluding any NUL terminator.
+    #[inline]
     #[must_use]
     pub const fn as_nonzero_bytes_mut(&mut self) -> &mut [NonZero<u8>] {
-        // SAFETY: We know for a fact that the bytes before the NUL, if any,
-        //         are nonzero. Additionally, since we're returning
-        //         nonzero bytes, it is impossible to insert a NUL during the borrow.
+        // SAFETY: We're returning a slice of nonzero bytes, and we know
+        //         that the slice up to the NUL terminator is all nonzero.
+        //
+        //         Since NUL is zero, it is impossible to safely insert
+        //         a zeroed byte.
         unsafe {
             (&raw mut *self.as_bytes_mut() as *mut [NonZero<u8>])
                 .as_mut_unchecked()
         }
     }
 
-    /// Returns whether this string has an included NUL terminator.
-    #[inline(always)]
-    #[must_use]
-    pub const fn has_nul(&self) -> bool {
-        matches!(self, SpaStr([.., 0x00]))
-    }
-
-    /// Returns whether this string is empty.
-    #[inline(always)]
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Returns the length of the SPA string including the NUL terminator.
+    /// Get this [`SpaStr`] as a [`CStr`].
     ///
-    /// This is not necessarily the size of the underlying buffer.
-    #[inline(always)]
+    /// # Returns
+    ///
+    /// Returns [`None`] if this string lacks a NUL terminator.
+    #[inline]
     #[must_use]
-    pub const fn len_with_nul(&self) -> NonZero<u32> {
-        NonZero::new(self.len().strict_add(1)).unwrap()
+    pub const fn as_c_str(&self) -> Option<&CStr> {
+        if self.has_nul() {
+            let length = self.len_with_nul().get();
+
+            let (c_str, []) = self.0.split_at(length) else {
+                panic!("this is just advisory");
+            };
+
+            // SAFETY: We know the underlying buffer is is a valid C string.
+            Some(unsafe { CStr::from_bytes_with_nul_unchecked(c_str) })
+        } else {
+            None
+        }
     }
 
-    /// Returns the length of the SPA string, excluding the NUL terminator.
-    ///
-    /// Note that this is not necessarily the size of the buffer.
+    /// Allocate a box on the heap of this SPA string, including a NUL terminator.
+    #[inline(never)]
+    #[must_use]
+    #[track_caller]
+    fn make_box(&self) -> Box<[u8]> {
+        let bytes = self.as_bytes();
+        let mut alloc = Box::new_uninit_slice(bytes.len().strict_add(1));
+
+        alloc[..bytes.len()].write_copy_of_slice(bytes);
+        alloc[bytes.len()].write(0x00);
+
+        // SAFETY: We've successfully initialized the buffer.
+        unsafe { alloc.assume_init() }
+    }
+
+    /// Allocate a refcounted heap value of this SPA string, including a NUL terminator.
+    #[inline(never)]
+    #[must_use]
+    #[track_caller]
+    fn make_rc(&self) -> Rc<[u8]> {
+        let bytes = self.as_bytes();
+        let mut alloc = Rc::new_uninit_slice(bytes.len().strict_add(1));
+
+        // SAFETY: We know the allocation is unique.
+        let buffer = unsafe { Rc::get_mut(&mut alloc).unwrap_unchecked() };
+
+        buffer[..bytes.len()].write_copy_of_slice(bytes);
+        buffer[bytes.len()].write(0x00);
+
+        // SAFETY: We know the buffer is initialized.
+        unsafe { alloc.assume_init() }
+    }
+
+    /// Allocate an atomic refcounted heap value of this SPA string, including a NUL terminator.
+    #[inline(never)]
+    #[must_use]
+    #[track_caller]
+    fn make_arc(&self) -> Arc<[u8]> {
+        let bytes = self.as_bytes();
+        let alloc = Arc::new_uninit_slice(bytes.len().strict_add(1));
+
+        let alloc = {
+            // NOTE: I would be really surprised if the provenance for this was fucked up.
+            let alloc = Arc::into_raw(alloc).cast_mut();
+
+            // SAFETY: We know the allocation is unique.
+            let buffer = unsafe { alloc.as_mut_unchecked() };
+
+            buffer[..bytes.len()].write_copy_of_slice(bytes);
+            buffer[bytes.len()].write(0x00);
+
+            // SAFETY: We know `alloc` is a valid `Arc`.
+            unsafe { Arc::from_raw(alloc) }
+        };
+
+        // SAFETY: We know the buffer is initialized.
+        unsafe { alloc.assume_init() }
+    }
+
+    /// Allocate some heap allocated thing with a NUL terminator, and add additional hints.
     #[inline(always)]
     #[must_use]
-    pub const fn len(&self) -> u32 {
-        // SAFETY: We know that all SPA strings, with our withour their NUL terminator
-        //         are within bounds of `MAX_SIZE`.
+    #[track_caller]
+    unsafe fn make_heap<'a, H, A, As, AsI>(
+        &'a self,
+        alloc: A,
+        additional_assertions: As,
+    ) -> H
+    where
+        H: Deref<Target = [u8]>,
+        A: FnOnce(&'a SpaStr) -> H,
+        As: FnOnce(&mut H) -> AsI,
+        AsI: IntoIterator<Item = bool>,
+    {
+        let mut heap_alloc = alloc(self);
+
+        // SAFETY: We know that they have the same length when including
+        //         a NUL.
         unsafe {
-            hint::assert_unchecked(self.0.len() <= super::MAX_SIZE as usize)
+            hint::assert_unchecked(
+                heap_alloc.len() == self.len_with_nul().get(),
+            )
         };
 
-        let len_without_nul = {
-            let has_nul = matches!(&self.0, [.., 0x00]);
+        // SAFETY: We know the heap buffer is not empty.
+        unsafe { hint::assert_unchecked(!heap_alloc.is_empty()) };
 
-            let len_without_nul = if has_nul {
-                // SAFETY: If there's a NUL, then we can decrement the length.
-                unsafe { self.0.len().unchecked_sub(1) }
-            } else {
-                // NOTE: No NUL was found, so we always just return the length of the original buffer.
-                self.0.len()
-            };
-
-            // SAFETY: We know that the length without the NUL terminator will be in bounds of
-            //         the original buffer. Additionally we know the difference will be at most 1.
-            unsafe { hint::assert_unchecked(len_without_nul <= self.0.len()) };
-
-            // SAFETY: We know that the length without the NUL terminator is less than the maximum SPA POD
-            //         size, as we need to be able to store the NUL terminator in a SPA POD.
-            unsafe {
-                hint::assert_unchecked(
-                    len_without_nul < super::MAX_SIZE as usize,
-                )
-            };
-
-            // SAFETY: Same as above, but additionally we know that the difference is at most 1.
-            unsafe {
-                hint::assert_unchecked(
-                    self.0.len().strict_sub(len_without_nul) <= 1,
-                )
-            };
-
-            // SAFETY: We for certain that the length with a NUL is at either greater than or equal
-            //         to the original buffer size.
-            unsafe {
-                hint::assert_unchecked(
-                    len_without_nul.strict_add(1) >= self.0.len(),
-                );
-            };
-
-            // SAFETY: Same as above but we know that the length with a NUL is at most one more
-            //         than the original buffer size.
-            unsafe {
-                hint::assert_unchecked(
-                    len_without_nul.strict_add(1).strict_sub(self.0.len()) <= 1,
-                )
-            }
-
-            if has_nul {
-                // SAFETY: If we have a NUL terminator, then we know the length including it,
-                //         is equivalent to the underlying buffer length.
-                unsafe {
-                    hint::assert_unchecked(
-                        len_without_nul.strict_add(1) == self.0.len(),
-                    )
-                };
-            } else {
-                // SAFETY: If we lack a NUL terminator, then we know the length including it,
-                //         is greater than the underlying buffer length.
-                unsafe {
-                    hint::assert_unchecked(
-                        len_without_nul.strict_add(1) > self.0.len(),
-                    )
-                };
-
-                // SAFETY: Same as above, but we know that the difference is one.
-                unsafe {
-                    hint::assert_unchecked(
-                        len_without_nul.strict_add(1).strict_sub(self.0.len())
-                            == 1,
-                    )
-                };
-            }
-
-            len_without_nul
+        // SAFETY: We know the last byte is NUL.
+        unsafe {
+            hint::assert_unchecked(heap_alloc.last().copied().unwrap() == 0x00)
         };
 
-        len_without_nul as u32
+        // SAFETY: We know that the `strlen + 1` is equal to the
+        //         size of the buffer.
+        unsafe {
+            hint::assert_unchecked(
+                CStr::from_ptr(heap_alloc.as_ptr().cast())
+                    .count_bytes()
+                    .unchecked_add(1)
+                    == heap_alloc.len(),
+            )
+        };
+
+        // SAFETY: The caller ensures this is fine.
+        additional_assertions(&mut heap_alloc)
+            .into_iter()
+            .for_each(|cond| unsafe { hint::assert_unchecked(cond) });
+
+        heap_alloc
+    }
+}
+
+unsafe impl AsBytes for SpaStr {}
+
+impl<const N: usize> TryFrom<&SpaStr> for [u8; N] {
+    type Error = TryFromSliceError;
+
+    #[inline(always)]
+    #[track_caller]
+    fn try_from(value: &SpaStr) -> Result<Self, Self::Error> {
+        let bytes = value.as_bytes();
+
+        if N == bytes.len().strict_add(1) {
+            let mut output = [MaybeUninit::uninit(); N];
+
+            output[..bytes.len()].write_copy_of_slice(bytes);
+            output[bytes.len()].write(0x00);
+
+            // SAFETY: We initialized the entire array.
+            Ok(unsafe { mem::transmute_copy(&output) })
+        } else {
+            // SAFETY: We're conjuring a ZST slice, this is always fine.
+            let slice = unsafe {
+                NonNull::slice_from_raw_parts(
+                    NonNull::<()>::dangling(),
+                    bytes.len().strict_add(1),
+                )
+                .as_ref()
+            };
+            // NOTE: We're essentially reconstructing the error that we would expect.
+            let array: Result<[(); N], _> = slice.try_into();
+
+            // NOTE: This should never panic.
+            Err(array.unwrap_err())
+        }
+    }
+}
+
+impl<const N: usize> TryFrom<&SpaStr> for [i8; N] {
+    type Error = TryFromSliceError;
+
+    #[inline(always)]
+    #[track_caller]
+    #[allow(clippy::toplevel_ref_arg)]
+    fn try_from(value: &SpaStr) -> Result<Self, Self::Error> {
+        let ref array: [u8; N] = value.try_into()?;
+
+        // SAFETY: `i8` and `u8` are POD.
+        Ok(unsafe { mem::transmute_copy(array) })
+    }
+}
+
+impl<const N: usize> TryFrom<&SpaStr> for [Byte; N] {
+    type Error = TryFromSliceError;
+
+    #[inline(always)]
+    #[track_caller]
+    #[allow(clippy::toplevel_ref_arg)]
+    fn try_from(value: &SpaStr) -> Result<Self, Self::Error> {
+        let ref array: [u8; N] = value.try_into()?;
+
+        // SAFETY: `i8` and `u8` are POD.
+        Ok(unsafe { mem::transmute_copy(array) })
+    }
+}
+
+const TRUSTED_ARRAY_TYPES: &[TypeId] =
+    &[TypeId::of::<u8>(), TypeId::of::<i8>(), TypeId::of::<Byte>()];
+
+#[inline(always)]
+fn is_trusted_array<T>() -> bool
+where
+    T: 'static + ?Sized,
+{
+    TRUSTED_ARRAY_TYPES
+        .iter()
+        .copied()
+        .any(|trusted| trusted == TypeId::of::<T>())
+}
+
+impl<'a, const N: usize, T> TryFrom<&'a SpaStr> for Rc<[T; N]>
+where
+    T: 'static,
+    &'a SpaStr: TryInto<[T; N], Error: Into<TryFromSliceError>> + Into<Rc<[T]>>,
+{
+    type Error = TryFromSliceError;
+
+    #[inline(always)]
+    #[track_caller]
+    fn try_from(value: &'a SpaStr) -> Result<Self, Self::Error> {
+        if is_trusted_array::<T>() {
+            // NOTE: We're discarding the value, as we don't need to spill onto the stack.
+            value.try_into().map(|_: [T; N]| ()).map_err(Into::into)?;
+
+            let alloc: Rc<[T]> = value.into();
+
+            // SAFETY: We trust `T`, thus we know the allocation to have a length of `N`.
+            unsafe { hint::assert_unchecked(alloc.len() == N) };
+
+            // SAFETY: See above.
+            Ok(unsafe { Rc::from_raw(Rc::into_raw(alloc).cast()) })
+        } else {
+            value.try_into().map(Rc::new).map_err(Into::into)
+        }
+    }
+}
+
+impl<'a, const N: usize, T> TryFrom<&'a SpaStr> for Arc<[T; N]>
+where
+    T: 'static,
+    &'a SpaStr:
+        TryInto<[T; N], Error: Into<TryFromSliceError>> + Into<Arc<[T]>>,
+{
+    type Error = TryFromSliceError;
+
+    #[inline(always)]
+    #[track_caller]
+    fn try_from(value: &'a SpaStr) -> Result<Self, Self::Error> {
+        if is_trusted_array::<T>() {
+            // NOTE: We're discarding the value, as we don't need to spill onto the stack.
+            value.try_into().map(|_: [T; N]| ()).map_err(Into::into)?;
+
+            let alloc: Arc<[T]> = value.into();
+
+            // SAFETY: We trust `T`, so we know the length is `N`.
+            unsafe { hint::assert_unchecked(alloc.len() == N) };
+
+            // SAFETY: See above.
+            Ok(unsafe { Arc::from_raw(Arc::into_raw(alloc).cast()) })
+        } else {
+            value.try_into().map(Arc::new).map_err(Into::into)
+        }
+    }
+}
+
+impl<'a, const N: usize, T> TryFrom<&'a SpaStr> for Box<[T; N]>
+where
+    T: 'static,
+    &'a SpaStr:
+        TryInto<[T; N], Error: Into<TryFromSliceError>> + Into<Box<[T]>>,
+{
+    type Error = TryFromSliceError;
+
+    #[inline(always)]
+    #[track_caller]
+    fn try_from(value: &'a SpaStr) -> Result<Self, Self::Error> {
+        if is_trusted_array::<T>() {
+            // NOTE: We're discarding the value, as we don't need to spill onto the stack.
+            value.try_into().map(|_: [T; N]| ()).map_err(Into::into)?;
+
+            let alloc: Box<[T]> = value.into();
+
+            // SAFETY: We trust `T`, we know its length to be `N`.
+            unsafe { hint::assert_unchecked(alloc.len() == N) };
+
+            // SAFETY: See above.
+            Ok(unsafe { Box::from_raw(Box::into_raw(alloc).cast()) })
+        } else {
+            value.try_into().map(Box::new).map_err(Into::into)
+        }
+    }
+}
+
+impl From<&SpaStr> for Box<[u8]> {
+    #[inline(always)]
+    #[track_caller]
+    fn from(spa_str: &SpaStr) -> Self {
+        // SAFETY: We know this is valid.
+        unsafe { spa_str.make_heap(SpaStr::make_box, |_| iter::empty()) }
+    }
+}
+
+impl From<&SpaStr> for Rc<[u8]> {
+    #[inline(always)]
+    #[track_caller]
+    fn from(spa_str: &SpaStr) -> Self {
+        // SAFETY: We know this is valid.
+        unsafe {
+            spa_str.make_heap(SpaStr::make_rc, |rc| {
+                [Rc::weak_count(rc) == 0, Rc::strong_count(rc) == 1]
+            })
+        }
+    }
+}
+
+impl From<&SpaStr> for Arc<[u8]> {
+    #[inline(always)]
+    #[track_caller]
+    fn from(spa_str: &SpaStr) -> Self {
+        // SAFETY: We know this is valid.
+        unsafe { spa_str.make_heap(SpaStr::make_arc, |_arc| []) }
+    }
+}
+
+impl From<&SpaStr> for Box<[i8]> {
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: &SpaStr) -> Self {
+        let bytes: Box<[u8]> = value.into();
+
+        // SAFETY: `i8` and `u8` are POD.
+        unsafe { Box::from_raw(Box::into_raw(bytes) as *mut [i8]) }
+    }
+}
+
+impl From<&SpaStr> for Arc<[i8]> {
+    #[inline(always)]
+    fn from(value: &SpaStr) -> Self {
+        let bytes: Arc<[u8]> = value.into();
+
+        // SAFETY: `i8` and `u8` are POD.
+        unsafe { Arc::from_raw(Arc::into_raw(bytes) as *const [i8]) }
+    }
+}
+
+impl From<&SpaStr> for Rc<[i8]> {
+    #[inline(always)]
+    fn from(value: &SpaStr) -> Self {
+        let bytes: Rc<[u8]> = value.into();
+
+        // SAFETY: `i8` and `u8` are POD.
+        unsafe { Rc::from_raw(Rc::into_raw(bytes) as *const [i8]) }
+    }
+}
+
+impl From<&SpaStr> for Box<[Byte]> {
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: &SpaStr) -> Self {
+        let bytes: Box<[u8]> = value.into();
+
+        // SAFETY: `Byte` and `u8` are POD.
+        unsafe { Box::from_raw(Box::into_raw(bytes) as *mut [Byte]) }
+    }
+}
+
+impl From<&SpaStr> for Arc<[Byte]> {
+    #[inline(always)]
+    fn from(value: &SpaStr) -> Self {
+        let bytes: Arc<[u8]> = value.into();
+
+        // SAFETY: `Byte` and `u8` are POD.
+        unsafe { Arc::from_raw(Arc::into_raw(bytes) as *const [Byte]) }
+    }
+}
+
+impl From<&SpaStr> for Rc<[Byte]> {
+    #[inline(always)]
+    fn from(value: &SpaStr) -> Self {
+        let bytes: Rc<[u8]> = value.into();
+
+        // SAFETY: `Byte` and `u8` are POD.
+        unsafe { Rc::from_raw(Rc::into_raw(bytes) as *const [Byte]) }
+    }
+}
+
+impl<'a, T> From<&'a SpaStr> for Vec<T>
+where
+    &'a SpaStr: Into<Box<[T]>>,
+{
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: &'a SpaStr) -> Self {
+        Vec::from(value.into())
+    }
+}
+
+impl<'a, T> From<&'a SpaStr> for VecDeque<T>
+where
+    &'a SpaStr: Into<Vec<T>>,
+{
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: &'a SpaStr) -> Self {
+        VecDeque::from(value.into())
+    }
+}
+
+impl From<&SpaStr> for Box<CStr> {
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: &SpaStr) -> Self {
+        let bytes: Box<[u8]> = value.into();
+
+        // SAFETY: We know that the above allocation is a valid C string.
+        unsafe { Box::from_raw(Box::into_raw(bytes) as *mut CStr) }
+    }
+}
+
+impl From<&SpaStr> for Rc<CStr> {
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: &SpaStr) -> Self {
+        let bytes: Rc<[u8]> = value.into();
+
+        // SAFETY: We know that the above allocation is a valid C string.
+        unsafe { Rc::from_raw(Rc::into_raw(bytes) as *const CStr) }
+    }
+}
+
+impl From<&SpaStr> for Arc<CStr> {
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: &SpaStr) -> Self {
+        let bytes: Arc<[u8]> = value.into();
+
+        // SAFETY: We know that the above allocation is a valid C string.
+        unsafe { Arc::from_raw(Arc::into_raw(bytes) as *const CStr) }
+    }
+}
+
+impl From<&SpaStr> for CString {
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: &SpaStr) -> Self {
+        let c_str: Box<CStr> = value.into();
+
+        c_str.into()
+    }
+}
+
+impl<'a> From<&'a SpaStr> for Cow<'a, CStr> {
+    #[inline(always)]
+    #[track_caller]
+    fn from(value: &'a SpaStr) -> Self {
+        match value.as_c_str() {
+            Some(c_str) => Cow::Borrowed(c_str),
+            None => Cow::Owned(value.into()),
+        }
+    }
+}
+
+impl fmt::Debug for SpaStr {
+    #[track_caller]
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        // FIXME: Avoid an allocation.
+        String::from_utf8_lossy(self.as_bytes()).fmt(f)
     }
 }
 
