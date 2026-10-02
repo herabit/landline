@@ -33,3 +33,5 @@ const _: () = {
     let _ = do_nothing::<std::ffi::c_float>(0.0_f32);
     let _ = do_nothing::<std::ffi::c_double>(0.0_f64);
 };
+
+mod util;

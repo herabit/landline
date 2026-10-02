@@ -1,19 +1,23 @@
 use std::{
-    any::TypeId,
     array::TryFromSliceError,
-    borrow::Cow,
+    borrow::{Borrow, BorrowMut, Cow},
+    cmp::Ordering,
     collections::VecDeque,
     ffi::{CStr, CString},
-    fmt, hint, iter,
+    fmt, hash, hint, iter,
     mem::{self, MaybeUninit},
-    num::NonZero,
-    ops::Deref,
+    num::{NonZero, TryFromIntError},
+    ops::{self, BitOrAssign, Deref},
     ptr::NonNull,
     rc::Rc,
+    slice,
     sync::Arc,
 };
 
-use crate::mem::{AsBytes, AsBytesMut, Byte, as_bytes, as_bytes_mut};
+use crate::{
+    mem::{AsBytes, AsBytesMut, Byte, as_bytes, as_bytes_mut},
+    util::is_char_ish,
+};
 
 /// A SPA String that contains either no NUL terminators, or ***precisely one*** at the end.
 ///
@@ -25,212 +29,292 @@ use crate::mem::{AsBytes, AsBytesMut, Byte, as_bytes, as_bytes_mut};
 ///
 /// We guarantee that the size of string, when including a NUL terminator, is less than or equal to [`super::MAX_SIZE`].
 #[repr(transparent)]
-pub struct SpaStr([u8]);
+pub struct SpaStr {
+    whole: [u8],
+}
 
 impl SpaStr {
-    /// Returns whether this string contains a NUL terminator.
-    #[inline]
-    #[must_use]
-    #[doc(alias = "is_nul_terminated")]
-    pub const fn has_nul(&self) -> bool {
-        match self.0.len().checked_sub(self.as_bytes().len()).unwrap() {
-            0 => false,
-            1 => true,
-            _ => panic!("edge case detected!"),
-        }
+    const fn split_inner(&self) -> (&[NonZero<u8>], Option<&Nul>) {
+        let (body, nul) = match &self.whole {
+            [body @ .., nul @ 0x00] => (body, Some(nul)),
+            body => (body, None),
+        };
+
+        // SAFETY: We know the body to be nonzero.
+        let body = unsafe {
+            (&raw const *body as *const [NonZero<u8>]).as_ref_unchecked()
+        };
+
+        let nul = match nul {
+            // SAFETY: We know this byte is NUL.
+            Some(nul) => Some(unsafe {
+                (&raw const *nul).cast::<Nul>().as_ref_unchecked()
+            }),
+            None => None,
+        };
+
+        (body, nul)
     }
 
-    /// Returns the length of the string, excluding any NUL terminator.
-    #[inline]
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.as_bytes().len()
+    const fn split_mut_inner(
+        &mut self
+    ) -> (&mut [NonZero<u8>], Option<&mut Nul>) {
+        let (body, nul) = match &mut self.whole {
+            [body @ .., nul @ 0x00] => (body, Some(nul)),
+            body => (body, None),
+        };
+
+        // SAFETY: We know the body to be nonzero.
+        let body = unsafe {
+            (&raw mut *body as *mut [NonZero<u8>]).as_mut_unchecked()
+        };
+
+        let nul = match nul {
+            // SAFETY: WE know this byte is NUL
+            Some(nul) => Some(unsafe {
+                (&raw mut *nul).cast::<Nul>().as_mut_unchecked()
+            }),
+            None => None,
+        };
+
+        (body, nul)
     }
 
-    /// Returns whether this string is empty.
-    ///
-    /// This does not include the NUL terminator, if there is any.
-    #[inline]
+    /// Splits this SPA string at its body, which is guaranteed to contain no NULs (which is just zero),
+    /// and the NUL terminator at the end of the string, if there's any.
+    #[inline(always)]
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.as_bytes().is_empty()
-    }
+    pub const fn split(&self) -> (&[NonZero<u8>], Option<&Nul>) {
+        let (body, nul) = self.split_inner();
 
-    /// Returns the length of the string, including a NUL terminator.
-    ///
-    /// # Validity
-    ///
-    /// This is advisory, the underlying string may not actually have a NUL
-    /// terminator.
-    #[inline]
-    #[must_use]
-    pub const fn len_with_nul(&self) -> NonZero<usize> {
-        let len_with_nul = self.len().checked_add(1).unwrap();
-
-        assert!(
-            len_with_nul <= super::MAX_SIZE as usize,
-            "something has gone horribly wrong",
-        );
-
-        NonZero::new(len_with_nul).unwrap()
-    }
-
-    /// Returns the underlying string, excluding any NUL terminator.
-    #[inline]
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8] {
-        // SAFETY: We know that the source buffer is at most `MAX_SIZE` bytes.
+        // SAFETY: We know the size without a NUL to be less than the maximum SPA size.
         unsafe {
-            hint::assert_unchecked(self.0.len() <= super::MAX_SIZE as usize)
+            hint::assert_unchecked(body.len() < super::MAX_SIZE as usize)
         };
 
-        // NOTE: Fancy pattern matching to remove the trailing NUL, but only if there is one.
-        let (body, _nul) = {
-            let dec_value = match &self.0 {
-                // NOTE: The total length is at least one, decrementing cannot overflow.
-                [.., 0x00] => 1_usize,
-                // NOTE: Either an empty buffer or one without a NUL.
-                [] | [.., _] => 0_usize,
-            };
-
-            // SAFETY: When there's no NUL, `dec_value` is zero, so no overflow. When there is a NUL,
-            //         `dec_value` is one, and since we need at least one byte to store the NUL,
-            //         decrementing the language too, will not overflow.
-            let nul_pos = unsafe { self.0.len().unchecked_sub(dec_value) };
-
-            // SAFETY: We know that `nul_pos` is at most `self.0.len()`.
-            //
-            //         `split_at` and `split_at_unchecked`, and the above subtraction
-            //         all for some reason fail to establish this relationship.
-            unsafe { hint::assert_unchecked(nul_pos <= self.0.len()) };
-
-            // NOTE: No need for the unsafe version, the above assertion does the work for us,
-            //       and more. Honestly, `split_at_unchecked` would be better as a `split_at_checked.unwrap()`.
-            let (body, nul) = self.0.split_at(nul_pos);
-
-            // SAFETY: We know that the length of the body is at most `MAX_SIZE - 1`, as we need
-            //         one byte to store the NUL.
-            unsafe {
-                hint::assert_unchecked(body.len() < super::MAX_SIZE as usize)
-            };
-
-            // SAFETY: We know that the body's length when incremented is at most `MAX_SIZE`.
+        if let Some(Nul) = nul {
+            // SAFETY: We know that if there's a NUL terminator, that incrementing the body
+            //         size is equivalent to the size of the whole buffer.
             unsafe {
                 hint::assert_unchecked(
-                    body.len().unchecked_add(1) <= super::MAX_SIZE as usize,
+                    body.len().unchecked_add(1) == self.whole.len(),
                 )
             };
+        } else {
+            // SAFETY: If there's no NUL, then we know they're equivalent in size.
+            unsafe { hint::assert_unchecked(body.len() == self.whole.len()) };
+        }
 
-            // SAFETY: We know that the body's length, incremented, is at most one byte more than
-            //         the buffer length.
-            unsafe {
-                hint::assert_unchecked(
-                    body.len().unchecked_add(1).unchecked_sub(self.0.len())
-                        <= 1,
-                )
-            };
-
-            // SAFETY: Same as above, more or less.
-            unsafe {
-                hint::assert_unchecked(
-                    body.len().unchecked_add(1) >= self.0.len(),
-                )
-            };
-
-            if let [nul] = nul {
-                // SAFETY: If the nul buffer isn't empty, then we know that byte is `0`.
-                unsafe { hint::assert_unchecked(*nul == 0x00) };
-
-                // SAFETY: Same as the above, but for the last element in the source buffer.
-                unsafe {
-                    hint::assert_unchecked(
-                        self.0.last().copied().unwrap_unchecked() == 0x00,
-                    )
-                };
-
-                // SAFETY: We know they're the same address.
-                unsafe {
-                    hint::assert_unchecked(
-                        (&raw const *nul).offset_from_unsigned(
-                            self.0.last().unwrap_unchecked(),
-                        ) == 0,
-                    )
-                }
-            }
-
-            unsafe {
-                hint::assert_unchecked(
-                    body.len().unchecked_add(1) - 1 == body.len(),
-                )
-            };
-
-            (body, nul)
-        };
-
-        body
+        (body, nul)
     }
 
-    /// Returns the underlying string mutably, excluding any NUL terminator.
+    /// Mutably splits this SPA string at its body, which is guaranteed to contain no NULs (which are just zero),
+    /// and the NUL terminator at the end of the string, if there's any.
+    #[inline(always)]
+    #[must_use]
+    pub const fn split_mut(
+        &mut self
+    ) -> (&mut [NonZero<u8>], Option<&mut Nul>) {
+        let whole_len = self.whole.len();
+        let (body, nul) = self.split_mut_inner();
+
+        // SAFETY: We know the size without a NUL to be less than the maximum SPA size.
+        unsafe {
+            hint::assert_unchecked(body.len() < super::MAX_SIZE as usize)
+        };
+
+        if let Some(Nul) = nul {
+            // SAFETY: We know that if there's a NUL terminator, that incrementing the body
+            //         size is equivalent to the size of the whole buffer.
+            unsafe {
+                hint::assert_unchecked(body.len().unchecked_add(1) == whole_len)
+            };
+        } else {
+            // SAFETY: If there's no NUL, then we know they're equivalent in size.
+            unsafe { hint::assert_unchecked(body.len() == whole_len) };
+        }
+
+        (body, nul)
+    }
+
+    /// The [`u8`] correlary to [`SpaStr::split`]. The body is guaranteed to contain no NULs, and the optional NUL
+    /// is guaranteed to be NUL.
+    #[inline(always)]
+    #[must_use]
+    pub const fn split_bytes(&self) -> (&[u8], Option<&u8>) {
+        let (body, nul) = self.split();
+
+        // SAFETY: Mutation of the underlying buffer is impossible, and `u8` has less restrictive
+        //         bit validity requirements.
+        let body =
+            unsafe { (&raw const *body as *const [u8]).as_ref_unchecked() };
+
+        let nul = match nul {
+            // SAFETY: Mutation is impossible, and `u8` can represent any initialized byte.
+            Some(nul) => Some(unsafe {
+                (&raw const *nul).cast::<u8>().as_ref_unchecked()
+            }),
+            None => None,
+        };
+
+        (body, nul)
+    }
+
+    /// The [`u8`] correlary to  [`SpaStr::split_mut`]. The body is guaranteed to contain no NULs, and the optional NUL
+    /// is guaranteed to be NUL.
     ///
     /// # Safety
     ///
-    /// The caller must ensure that the buffer contains no NULs when the borrow ends.
+    /// Body musn't contain NULs before the borrow ends, and the NUL must be a NUL when the borrow ends. If you want a
+    /// type-safe variant of this, see  [`SpaStr::split_mut`].
+    #[inline(always)]
+    #[must_use]
+    pub const unsafe fn split_bytes_mut(
+        &mut self
+    ) -> (&mut [u8], Option<&mut u8>) {
+        let (body, nul) = self.split_mut();
+
+        // SAFETY: The caller ensures this is acceptable.
+        let body = unsafe { (&raw mut *body as *mut [u8]).as_mut_unchecked() };
+
+        let nul = match nul {
+            // SAFETY: The caller ensures this is acceptable.
+            Some(nul) => {
+                Some(unsafe { (&raw mut *nul).cast::<u8>().as_mut_unchecked() })
+            },
+            None => None,
+        };
+
+        (body, nul)
+    }
+
+    /// Returns the body of the SPA string.
+    #[inline(always)]
+    #[must_use]
+    pub const fn body(&self) -> &[NonZero<u8>] {
+        self.split().0
+    }
+
+    /// Mutably returns the body of the SPA string.
+    #[inline(always)]
+    #[must_use]
+    pub const fn body_mut(&mut self) -> &mut [NonZero<u8>] {
+        self.split_mut().0
+    }
+
+    /// Returns the body of the SPA string, [`u8`] correlary to [`SpaStr::body`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8] {
+        self.split_bytes().0
+    }
+
+    /// Returns the body of the SPA string, [`u8`] correlary to [`SpaStr::body_mut`].
     ///
-    /// If you need a safe variant, see [`SpaStr::as_nonzero_bytes_mut`].
-    #[inline]
+    /// # Safety
+    ///
+    /// The caller must ensure that the body contains no NULs when the borrow ends.
+    #[inline(always)]
+    #[must_use]
+    pub const unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: The caller ensures this is acceptable.
+        unsafe { self.split_bytes_mut().0 }
+    }
+
+    /// Returns the entire underlying buffer of the SPA string.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_whole(&self) -> &[u8] {
+        // SAFETY: We know this to always be true.
+        unsafe {
+            hint::assert_unchecked(self.whole.len() <= super::MAX_SIZE as usize)
+        };
+
+        &self.whole
+    }
+
+    /// Returns the entire underlying buffer of the SPA string.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure before the borrow ends:
+    ///
+    /// 1. The NUL, if any, remains unchanged.
+    /// 2. That all bytes up to the NUL or end of the buffer are not NUL.
+    /// 3. Other stuff probably, avoid using this. It exists mainly for consistency.
+    #[inline(always)]
     #[must_use]
     #[allow(unused_unsafe)]
-    pub const unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
-        let len = self.as_bytes().len();
-
-        // SAFETY: The caller ensures this is safe.
-        unsafe { self.0.split_at_mut(len).0 }
-    }
-
-    /// Returns the underlying string as a slice of [`NonZero`] bytes, excluding any NUL terminator.
-    #[inline]
-    #[must_use]
-    pub const fn as_nonzero_bytes(&self) -> &[NonZero<u8>] {
-        // SAFETY: We know that the slice up to the NUL terminator, if any,
-        //         is entirely nonzero.
+    pub const unsafe fn as_whole_mut(&mut self) -> &mut [u8] {
+        // SAFETY: We know this to always be true.
         unsafe {
-            (&raw const *self.as_bytes() as *const [NonZero<u8>])
-                .as_ref_unchecked()
-        }
+            hint::assert_unchecked(self.whole.len() <= super::MAX_SIZE as usize)
+        };
+
+        // SAFETY: The caller ensures this is okay.
+        unsafe { &mut self.whole }
     }
 
-    /// Returns the underlying string as a mutable slice of [`NonZero`] bytes, excluding any NUL terminator.
-    #[inline]
+    /// Returns whether or not SPA string has an encoded NUL terminator already.
+    #[inline(always)]
     #[must_use]
-    pub const fn as_nonzero_bytes_mut(&mut self) -> &mut [NonZero<u8>] {
-        // SAFETY: We're returning a slice of nonzero bytes, and we know
-        //         that the slice up to the NUL terminator is all nonzero.
-        //
-        //         Since NUL is zero, it is impossible to safely insert
-        //         a zeroed byte.
-        unsafe {
-            (&raw mut *self.as_bytes_mut() as *mut [NonZero<u8>])
-                .as_mut_unchecked()
-        }
+    pub const fn has_nul(&self) -> bool {
+        self.split().1.is_some()
     }
 
-    /// Get this [`SpaStr`] as a [`CStr`].
+    /// Returns the length of the body of the SPA string.
+    #[inline(always)]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.body().len()
+    }
+
+    /// Returns whether the body of this SPA string is empty.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the length of the body, plus the NUL terminator.
+    ///
+    /// This is always `self.len() + 1`, regardless of whether or not
+    /// the underlying buffer is actually NUL terminated.
+    ///
+    /// It's a convenience method.
+    #[inline(always)]
+    #[must_use]
+    pub const fn len_with_nul(&self) -> NonZero<usize> {
+        NonZero::new(self.len().strict_add(1)).unwrap()
+    }
+
+    /// Borrows the underlying buffer as a C string.
     ///
     /// # Returns
     ///
-    /// Returns [`None`] if this string lacks a NUL terminator.
-    #[inline]
+    /// Returns [`None`] if the underlying buffer is not NUL terminated.
+    #[inline(always)]
     #[must_use]
     pub const fn as_c_str(&self) -> Option<&CStr> {
         if self.has_nul() {
-            let length = self.len_with_nul().get();
+            Some(unsafe {
+                (&raw const *self as *const CStr).as_ref_unchecked()
+            })
+        } else {
+            None
+        }
+    }
 
-            let (c_str, []) = self.0.split_at(length) else {
-                panic!("this is just advisory");
-            };
-
-            // SAFETY: We know the underlying buffer is is a valid C string.
-            Some(unsafe { CStr::from_bytes_with_nul_unchecked(c_str) })
+    /// Mutably borrows the underlying buffer as a C string.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`None`] if the underlying buffer is not NUL terminated.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_c_str_mut(&mut self) -> Option<&mut CStr> {
+        if self.has_nul() {
+            Some(unsafe { (&raw mut *self as *mut CStr).as_mut_unchecked() })
         } else {
             None
         }
@@ -245,7 +329,7 @@ impl SpaStr {
         let mut alloc = Box::new_uninit_slice(bytes.len().strict_add(1));
 
         alloc[..bytes.len()].write_copy_of_slice(bytes);
-        alloc[bytes.len()].write(0x00);
+        alloc[bytes.len()].write(Nul as u8);
 
         // SAFETY: We've successfully initialized the buffer.
         unsafe { alloc.assume_init() }
@@ -263,7 +347,7 @@ impl SpaStr {
         let buffer = unsafe { Rc::get_mut(&mut alloc).unwrap_unchecked() };
 
         buffer[..bytes.len()].write_copy_of_slice(bytes);
-        buffer[bytes.len()].write(0x00);
+        buffer[bytes.len()].write(Nul as u8);
 
         // SAFETY: We know the buffer is initialized.
         unsafe { alloc.assume_init() }
@@ -285,7 +369,7 @@ impl SpaStr {
             let buffer = unsafe { alloc.as_mut_unchecked() };
 
             buffer[..bytes.len()].write_copy_of_slice(bytes);
-            buffer[bytes.len()].write(0x00);
+            buffer[bytes.len()].write(Nul as u8);
 
             // SAFETY: We know `alloc` is a valid `Arc`.
             unsafe { Arc::from_raw(alloc) }
@@ -325,7 +409,9 @@ impl SpaStr {
 
         // SAFETY: We know the last byte is NUL.
         unsafe {
-            hint::assert_unchecked(heap_alloc.last().copied().unwrap() == 0x00)
+            hint::assert_unchecked(
+                heap_alloc.last().copied().unwrap() == Nul as u8,
+            )
         };
 
         // SAFETY: We know that the `strlen + 1` is equal to the
@@ -362,10 +448,10 @@ impl<const N: usize> TryFrom<&SpaStr> for [u8; N] {
             let mut output = [MaybeUninit::uninit(); N];
 
             output[..bytes.len()].write_copy_of_slice(bytes);
-            output[bytes.len()].write(0x00);
+            output[bytes.len()].write(Nul as u8);
 
             // SAFETY: We initialized the entire array.
-            Ok(unsafe { mem::transmute_copy(&output) })
+            Ok(unsafe { MaybeUninit::from(output).assume_init() })
         } else {
             // SAFETY: We're conjuring a ZST slice, this is always fine.
             let slice = unsafe {
@@ -412,100 +498,174 @@ impl<const N: usize> TryFrom<&SpaStr> for [Byte; N] {
     }
 }
 
-const TRUSTED_ARRAY_TYPES: &[TypeId] =
-    &[TypeId::of::<u8>(), TypeId::of::<i8>(), TypeId::of::<Byte>()];
+#[allow(clippy::nonnull_unchecked_on_box_ptr, clippy::missing_safety_doc)]
+trait HeapFamily {
+    type New<Target: ?Sized>: Sized + Deref<Target = Target>;
+
+    #[must_use]
+    #[track_caller]
+    fn new<T>(val: T) -> Self::New<T>;
+
+    #[must_use]
+    #[track_caller]
+    fn into_raw<T>(ptr: Self::New<T>) -> NonNull<T>
+    where
+        T: ?Sized;
+
+    #[must_use]
+    #[track_caller]
+    unsafe fn from_raw<T>(ptr: NonNull<T>) -> Self::New<T>
+    where
+        T: ?Sized;
+}
+
+struct BoxHeap;
+
+#[allow(clippy::nonnull_unchecked_on_box_ptr, clippy::missing_safety_doc)]
+impl HeapFamily for BoxHeap {
+    type New<Target: ?Sized> = Box<Target>;
+
+    #[inline(always)]
+    fn new<T>(val: T) -> Self::New<T> {
+        Box::new(val)
+    }
+    #[inline(always)]
+    fn into_raw<T>(ptr: Self::New<T>) -> NonNull<T>
+    where
+        T: ?Sized,
+    {
+        unsafe { NonNull::new_unchecked(Box::into_raw(ptr)) }
+    }
+
+    #[inline(always)]
+    unsafe fn from_raw<T>(ptr: NonNull<T>) -> Self::New<T>
+    where
+        T: ?Sized,
+    {
+        unsafe { Box::from_raw(ptr.as_ptr()) }
+    }
+}
+
+struct RcHeap;
+
+#[allow(clippy::nonnull_unchecked_on_box_ptr, clippy::missing_safety_doc)]
+impl HeapFamily for RcHeap {
+    type New<Target: ?Sized> = Rc<Target>;
+
+    #[inline(always)]
+    fn new<T>(val: T) -> Self::New<T> {
+        Rc::new(val)
+    }
+    #[inline(always)]
+    fn into_raw<T>(ptr: Self::New<T>) -> NonNull<T>
+    where
+        T: ?Sized,
+    {
+        unsafe { NonNull::new_unchecked(Rc::into_raw(ptr).cast_mut()) }
+    }
+
+    #[inline(always)]
+    unsafe fn from_raw<T>(ptr: NonNull<T>) -> Self::New<T>
+    where
+        T: ?Sized,
+    {
+        unsafe { Rc::from_raw(ptr.as_ptr()) }
+    }
+}
+
+struct ArcHeap;
+
+#[allow(clippy::nonnull_unchecked_on_box_ptr, clippy::missing_safety_doc)]
+impl HeapFamily for ArcHeap {
+    type New<Target: ?Sized> = Arc<Target>;
+
+    #[inline(always)]
+    fn new<T>(val: T) -> Self::New<T> {
+        Arc::new(val)
+    }
+    #[inline(always)]
+    fn into_raw<T>(ptr: Self::New<T>) -> NonNull<T>
+    where
+        T: ?Sized,
+    {
+        unsafe { NonNull::new_unchecked(Arc::into_raw(ptr).cast_mut()) }
+    }
+
+    #[inline(always)]
+    unsafe fn from_raw<T>(ptr: NonNull<T>) -> Self::New<T>
+    where
+        T: ?Sized,
+    {
+        unsafe { Arc::from_raw(ptr.as_ptr()) }
+    }
+}
 
 #[inline(always)]
-fn is_trusted_array<T>() -> bool
+#[track_caller]
+#[allow(clippy::type_complexity)]
+fn into_heap_array<'a, const N: usize, T, H>(
+    spa_str: &'a SpaStr
+) -> Result<H::New<[T; N]>, <&'a SpaStr as TryInto<[T; N]>>::Error>
 where
-    T: 'static + ?Sized,
+    H: HeapFamily,
+    &'a SpaStr: TryInto<[T; N]> + Into<H::New<[T]>>,
 {
-    TRUSTED_ARRAY_TYPES
-        .iter()
-        .copied()
-        .any(|trusted| trusted == TypeId::of::<T>())
+    if is_char_ish::<T>() {
+        spa_str.try_into().map(|_: [T; N]| ())?;
+
+        let alloc: H::New<[T]> = spa_str.into();
+
+        // SAFETY: We trust `T`, thus we know the allocation to have a length of `N`.
+        unsafe { hint::assert_unchecked(alloc.len() == N) };
+
+        // SAFETY: We know it's in bounds.
+        Ok(unsafe { H::from_raw(H::into_raw(alloc).cast()) })
+    } else {
+        spa_str.try_into().map(H::new)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub fn hello(spa_str: &SpaStr) -> Box<[u8; 256]> {
+    spa_str.try_into().unwrap()
 }
 
 impl<'a, const N: usize, T> TryFrom<&'a SpaStr> for Rc<[T; N]>
 where
-    T: 'static,
-    &'a SpaStr: TryInto<[T; N], Error: Into<TryFromSliceError>> + Into<Rc<[T]>>,
+    &'a SpaStr: TryInto<[T; N]> + Into<Rc<[T]>>,
 {
-    type Error = TryFromSliceError;
+    type Error = <&'a SpaStr as TryInto<[T; N]>>::Error;
 
     #[inline(always)]
     #[track_caller]
     fn try_from(value: &'a SpaStr) -> Result<Self, Self::Error> {
-        if is_trusted_array::<T>() {
-            // NOTE: We're discarding the value, as we don't need to spill onto the stack.
-            value.try_into().map(|_: [T; N]| ()).map_err(Into::into)?;
-
-            let alloc: Rc<[T]> = value.into();
-
-            // SAFETY: We trust `T`, thus we know the allocation to have a length of `N`.
-            unsafe { hint::assert_unchecked(alloc.len() == N) };
-
-            // SAFETY: See above.
-            Ok(unsafe { Rc::from_raw(Rc::into_raw(alloc).cast()) })
-        } else {
-            value.try_into().map(Rc::new).map_err(Into::into)
-        }
+        into_heap_array::<N, T, RcHeap>(value)
     }
 }
 
 impl<'a, const N: usize, T> TryFrom<&'a SpaStr> for Arc<[T; N]>
 where
-    T: 'static,
-    &'a SpaStr:
-        TryInto<[T; N], Error: Into<TryFromSliceError>> + Into<Arc<[T]>>,
+    &'a SpaStr: TryInto<[T; N]> + Into<Arc<[T]>>,
 {
-    type Error = TryFromSliceError;
+    type Error = <&'a SpaStr as TryInto<[T; N]>>::Error;
 
     #[inline(always)]
     #[track_caller]
     fn try_from(value: &'a SpaStr) -> Result<Self, Self::Error> {
-        if is_trusted_array::<T>() {
-            // NOTE: We're discarding the value, as we don't need to spill onto the stack.
-            value.try_into().map(|_: [T; N]| ()).map_err(Into::into)?;
-
-            let alloc: Arc<[T]> = value.into();
-
-            // SAFETY: We trust `T`, so we know the length is `N`.
-            unsafe { hint::assert_unchecked(alloc.len() == N) };
-
-            // SAFETY: See above.
-            Ok(unsafe { Arc::from_raw(Arc::into_raw(alloc).cast()) })
-        } else {
-            value.try_into().map(Arc::new).map_err(Into::into)
-        }
+        into_heap_array::<N, T, ArcHeap>(value)
     }
 }
 
 impl<'a, const N: usize, T> TryFrom<&'a SpaStr> for Box<[T; N]>
 where
-    T: 'static,
-    &'a SpaStr:
-        TryInto<[T; N], Error: Into<TryFromSliceError>> + Into<Box<[T]>>,
+    &'a SpaStr: TryInto<[T; N]> + Into<Box<[T]>>,
 {
-    type Error = TryFromSliceError;
+    type Error = <&'a SpaStr as TryInto<[T; N]>>::Error;
 
     #[inline(always)]
     #[track_caller]
     fn try_from(value: &'a SpaStr) -> Result<Self, Self::Error> {
-        if is_trusted_array::<T>() {
-            // NOTE: We're discarding the value, as we don't need to spill onto the stack.
-            value.try_into().map(|_: [T; N]| ()).map_err(Into::into)?;
-
-            let alloc: Box<[T]> = value.into();
-
-            // SAFETY: We trust `T`, we know its length to be `N`.
-            unsafe { hint::assert_unchecked(alloc.len() == N) };
-
-            // SAFETY: See above.
-            Ok(unsafe { Box::from_raw(Box::into_raw(alloc).cast()) })
-        } else {
-            value.try_into().map(Box::new).map_err(Into::into)
-        }
+        into_heap_array::<N, T, BoxHeap>(value)
     }
 }
 
@@ -514,7 +674,7 @@ impl From<&SpaStr> for Box<[u8]> {
     #[track_caller]
     fn from(spa_str: &SpaStr) -> Self {
         // SAFETY: We know this is valid.
-        unsafe { spa_str.make_heap(SpaStr::make_box, |_| iter::empty()) }
+        unsafe { spa_str.make_heap(SpaStr::make_box, |_| []) }
     }
 }
 
@@ -688,6 +848,464 @@ impl fmt::Debug for SpaStr {
         String::from_utf8_lossy(self.as_bytes()).fmt(f)
     }
 }
+
+/// Just a fancy [`u8`] that has a single, valid in-memory representation, `0x00`, or NUL.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[repr(u8)]
+pub enum Nul {
+    /// A value that is only ever NUL (`0x00`).
+    #[default]
+    Nul = 0x00,
+}
+
+macro_rules! nul_ints {
+    ($($int:ident),+) => {
+        $(
+            impl From<Nul> for $int {
+                #[inline(always)]
+                fn from(nul: Nul) -> $int {
+                    nul as $int
+                }
+            }
+
+            impl TryFrom<$int> for Nul {
+                type Error = TryFromIntError;
+
+                #[inline(always)]
+                fn try_from(i: $int) -> Result<Nul, TryFromIntError> {
+                    match i.cmp(&0x00) {
+                        Ordering::Less => Err(u32::try_from(-1_i32).unwrap_err()),
+                        Ordering::Equal => Ok(Nul),
+                        Ordering::Greater => Err(i32::try_from(u32::MAX).unwrap_err()),
+                    }
+                }
+            }
+
+            impl PartialEq<Nul> for $int {
+                #[inline(always)]
+                fn eq(&self, nul: &Nul) -> bool {
+                    *self == *nul as $int
+                }
+            }
+
+            impl PartialEq<$int> for Nul {
+                #[inline(always)]
+                fn eq(&self, i: &$int) -> bool {
+                    *self as $int == *i
+                }
+            }
+
+            impl PartialOrd<Nul> for $int {
+                #[inline(always)]
+                fn partial_cmp(&self, nul: &Nul) -> Option<Ordering> {
+                    Some(self.cmp(&(*nul as $int)))
+                }
+            }
+
+            impl PartialOrd<$int> for Nul {
+                #[inline(always)]
+                fn partial_cmp(&self, i: &$int) -> Option<Ordering> {
+                    Some((*self as $int).cmp(i))
+                }
+            }
+
+            impl TryFrom<Nul> for NonZero<$int> {
+                type Error = TryFromIntError;
+
+                #[inline(always)]
+                fn try_from(nul: Nul) -> Result<NonZero<$int>, TryFromIntError> {
+                    // NOTE: We know this will always fail.
+                    (nul as $int).try_into()
+                }
+            }
+
+            impl TryFrom<NonZero<$int>> for Nul {
+                type Error = TryFromIntError;
+
+                #[inline(always)]
+                fn try_from(i: NonZero<$int>) -> Result<Nul, TryFromIntError> {
+                    // NOTE: We know this will always fail.
+                    i.get().try_into()
+                }
+            }
+
+
+            impl PartialEq<Nul> for NonZero<$int> {
+                #[inline(always)]
+                fn eq(&self, nul: &Nul) -> bool {
+                    self.get() == *nul
+                }
+            }
+
+            impl PartialEq<NonZero<$int>> for Nul {
+                #[inline(always)]
+                fn eq(&self, i: &NonZero<$int>) -> bool {
+                    *self == i.get()
+                }
+            }
+
+            impl PartialOrd<Nul> for NonZero<$int> {
+                #[inline(always)]
+                fn partial_cmp(&self, nul: &Nul) -> Option<Ordering> {
+                    self.get().partial_cmp(nul)
+                }
+            }
+
+            impl PartialOrd<NonZero<$int>> for Nul {
+                #[inline(always)]
+                fn partial_cmp(&self, i: &NonZero<$int>) -> Option<Ordering> {
+                    self.partial_cmp(&i.get())
+                }
+            }
+        )+
+    };
+}
+
+nul_ints!(u8, u16, u32, u64, u128, usize);
+nul_ints!(i8, i16, i32, i64, i128, isize);
+
+impl hash::Hash for Nul {
+    #[inline(always)]
+    fn hash<H>(
+        &self,
+        state: &mut H,
+    ) where
+        H: hash::Hasher,
+    {
+        (*self as u8).hash(state);
+    }
+
+    #[inline(always)]
+    fn hash_slice<H>(
+        data: &[Self],
+        state: &mut H,
+    ) where
+        H: hash::Hasher,
+    {
+        u8::hash_slice(Byte::as_u8_slice(as_bytes(data)), state);
+    }
+}
+
+impl fmt::Debug for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        (*self as u8).fmt(f)
+    }
+}
+
+impl fmt::Display for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        (*self as u8).fmt(f)
+    }
+}
+
+impl fmt::Binary for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        (*self as u8).fmt(f)
+    }
+}
+
+impl fmt::LowerHex for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        (*self as u8).fmt(f)
+    }
+}
+
+impl fmt::UpperHex for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        (*self as u8).fmt(f)
+    }
+}
+
+impl fmt::LowerExp for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        (*self as u8).fmt(f)
+    }
+}
+
+impl fmt::UpperExp for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        (*self as u8).fmt(f)
+    }
+}
+
+impl fmt::Octal for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        (*self as u8).fmt(f)
+    }
+}
+
+impl AsRef<CStr> for Nul {
+    #[inline(always)]
+    fn as_ref(&self) -> &CStr {
+        // SAFETY: `Nul` is just an empty C string.
+        unsafe {
+            (&raw const *slice::from_ref(self) as *const CStr)
+                .as_ref_unchecked()
+        }
+    }
+}
+
+impl AsMut<CStr> for Nul {
+    #[inline(always)]
+    fn as_mut(&mut self) -> &mut CStr {
+        // SAFETY: `Nul` is just an empty C string.
+        unsafe {
+            (&raw mut *slice::from_mut(self) as *mut CStr).as_mut_unchecked()
+        }
+    }
+}
+
+impl Borrow<CStr> for Nul {
+    #[inline(always)]
+    fn borrow(&self) -> &CStr {
+        self.as_ref()
+    }
+}
+
+impl BorrowMut<CStr> for Nul {
+    #[inline(always)]
+    fn borrow_mut(&mut self) -> &mut CStr {
+        self.as_mut()
+    }
+}
+
+impl ops::Add for Nul {
+    type Output = Nul;
+
+    #[inline(always)]
+    fn add(
+        self,
+        _: Self,
+    ) -> Self::Output {
+        Nul
+    }
+}
+
+impl ops::AddAssign for Nul {
+    #[inline(always)]
+    fn add_assign(
+        &mut self,
+        _: Self,
+    ) {
+    }
+}
+
+impl ops::Sub for Nul {
+    type Output = Nul;
+
+    #[inline(always)]
+    fn sub(
+        self,
+        _: Self,
+    ) -> Self::Output {
+        Nul
+    }
+}
+
+impl ops::SubAssign for Nul {
+    #[inline(always)]
+    fn sub_assign(
+        &mut self,
+        _: Self,
+    ) {
+    }
+}
+
+impl ops::Mul for Nul {
+    type Output = Nul;
+
+    #[inline(always)]
+    fn mul(
+        self,
+        _: Self,
+    ) -> Self::Output {
+        Nul
+    }
+}
+
+impl ops::MulAssign for Nul {
+    #[inline(always)]
+    fn mul_assign(
+        &mut self,
+        _: Self,
+    ) {
+    }
+}
+
+impl ops::Neg for Nul {
+    type Output = Nul;
+
+    #[inline(always)]
+    fn neg(self) -> Self::Output {
+        Nul
+    }
+}
+
+impl ops::BitAnd for Nul {
+    type Output = Nul;
+
+    #[inline(always)]
+    fn bitand(
+        self,
+        _: Self,
+    ) -> Self::Output {
+        Nul
+    }
+}
+
+impl ops::BitAndAssign for Nul {
+    #[inline(always)]
+    fn bitand_assign(
+        &mut self,
+        _: Self,
+    ) {
+    }
+}
+
+impl ops::BitOr for Nul {
+    type Output = Nul;
+
+    #[inline(always)]
+    fn bitor(
+        self,
+        _: Self,
+    ) -> Self::Output {
+        Nul
+    }
+}
+
+impl BitOrAssign for Nul {
+    #[inline(always)]
+    fn bitor_assign(
+        &mut self,
+        _: Self,
+    ) {
+    }
+}
+
+impl ops::BitXor for Nul {
+    type Output = Nul;
+
+    #[inline(always)]
+    fn bitxor(
+        self,
+        _: Self,
+    ) -> Self::Output {
+        Nul
+    }
+}
+
+impl ops::BitXorAssign for Nul {
+    #[inline(always)]
+    fn bitxor_assign(
+        &mut self,
+        _: Self,
+    ) {
+    }
+}
+
+impl iter::Product for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn product<I>(iter: I) -> Self
+    where
+        I: Iterator<Item = Self>,
+    {
+        iter.fold(Nul, |a, b| a * b)
+    }
+}
+
+impl<'a> iter::Product<&'a Nul> for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn product<I>(iter: I) -> Self
+    where
+        I: Iterator<Item = &'a Nul>,
+    {
+        iter.copied().product()
+    }
+}
+
+impl iter::Sum for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn sum<I>(iter: I) -> Self
+    where
+        I: Iterator<Item = Self>,
+    {
+        iter.fold(Nul, |a, b| a + b)
+    }
+}
+
+impl<'a> iter::Sum<&'a Nul> for Nul {
+    #[inline(always)]
+    #[track_caller]
+    fn sum<I>(iter: I) -> Self
+    where
+        I: Iterator<Item = &'a Nul>,
+    {
+        iter.copied().sum()
+    }
+}
+
+// impl iter::Product for Nul {
+//     #[inline(always)]
+//     fn product<I>(iter: I) -> Self where I: Iterator<Item = Self> {
+
+//     }
+// }
+
+// SAFETY: This type is just a `u8` that is zero, it's always safe to read it as bytes.
+unsafe impl AsBytes for Nul {}
+
+// Just a little namespace hack.
+mod nul_namespace {
+    #[doc(hidden)]
+    pub use super::Nul::Nul;
+}
+
+#[doc(hidden)]
+pub use nul_namespace::*;
 
 /// An enum that represents where a NUL terminator was found
 /// within some byte buffer.

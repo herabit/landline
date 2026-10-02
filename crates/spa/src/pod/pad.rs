@@ -620,11 +620,6 @@ macro_rules! of_error {
     };
 }
 
-#[unsafe(no_mangle)]
-pub fn lol(a: NonZero<u8>) -> Result<Pad8, Ordering> {
-    conversions::pad8_of(a)
-}
-
 macro_rules! conversions {
     (
         $(
