@@ -33,9 +33,12 @@ use private::MapIndex as _;
 ///
 /// Failure to comply with these invariants is considered undefined behavior.
 #[repr(transparent)]
-pub struct SpaSlice<P>([P])
+pub struct SpaSlice<P>
 where
-    P: PrimPod;
+    P: PrimPod,
+{
+    prims: [P],
+}
 
 impl<P> SpaSlice<P>
 where
@@ -50,10 +53,10 @@ where
         panic!("we somehow have an invalid state, fun.");
     };
 
-    /// An empty [`SpaSlice`].
+    /// An empty, mutable [`SpaSlice`].
     #[inline(always)]
     #[must_use]
-    pub const fn empty() -> &'static mut Self {
+    pub const fn empty_mut() -> &'static mut Self {
         const {
             match Self::from_prims_mut::<P>(&mut []) {
                 Ok(empty) => empty,
@@ -62,10 +65,36 @@ where
         }
     }
 
-    /// Returns the length of this slice, as a [`u32`].
+    /// An empty [`SpaSlice`].
     #[inline(always)]
     #[must_use]
-    pub const fn len(&self) -> u32 {
+    pub const fn empty() -> &'static Self {
+        Self::empty_mut()
+    }
+
+    /// Returns whether this slice is empty.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the length of this slice.
+    ///
+    /// # Safety
+    ///
+    /// While this is a [`usize`], it is guaranteed to be representable as a [`u32`],
+    /// as it is at most [`Self::MAX_LEN`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.as_prims().len()
+    }
+
+    /// Borrow the underlying slice of primitives.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_prims(&self) -> &[P] {
         // SAFETY: We have a safety requirement that the size of the slice, in bytes, mustn't
         //         exceed `MAX_SIZE`.
         unsafe {
@@ -77,45 +106,31 @@ where
         // SAFETY: Same as above, except for the maximum length of a SPA array of `P`s, which is
         //         derived from `MAX_SIZE`.
         unsafe {
-            hint::assert_unchecked(self.0.len() <= Self::MAX_LEN as usize)
+            hint::assert_unchecked(self.prims.len() <= Self::MAX_LEN as usize)
         };
 
-        self.0.len() as u32
-    }
-
-    /// Returns whether this slice is empty.
-    #[inline(always)]
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Borrow the underlying slice of primitives.
-    #[inline(always)]
-    #[must_use]
-    pub const fn as_prims(&self) -> &[P] {
-        // SAFETY: This is equivalent to `&self.0`, but it gives the compiler
-        //         additional information.
-        unsafe {
-            slice::from_raw_parts(
-                (&raw const *self).cast::<P>(),
-                self.len() as usize,
-            )
-        }
+        &self.prims
     }
 
     /// Mutably borrow the underlying slice of primitives.
     #[inline(always)]
     #[must_use]
     pub const fn as_prims_mut(&mut self) -> &mut [P] {
-        // SAFETY: This is equivalent to `&mut self.0`, but it gives the
-        //         compiler additional information.
+        // SAFETY: We have a safety requirement that the size of the slice, in bytes, mustn't
+        //         exceed `MAX_SIZE`.
         unsafe {
-            slice::from_raw_parts_mut(
-                (&raw mut *self).cast::<P>(),
-                self.len() as usize,
+            hint::assert_unchecked(
+                size_of_val(self) <= super::MAX_SIZE as usize,
             )
-        }
+        };
+
+        // SAFETY: Same as above, except for the maximum length of a SPA array of `P`s, which is
+        //         derived from `MAX_SIZE`.
+        unsafe {
+            hint::assert_unchecked(self.prims.len() <= Self::MAX_LEN as usize)
+        };
+
+        &mut self.prims
     }
 
     /// Attempt to construct a [`SpaSlice`] from a slice of things that can be
@@ -182,8 +197,7 @@ where
         output: &mut [Byte],
     ) -> Result<NonZero<u32>, PodError> {
         // NOTE: This is the size including element header.
-        let size = self
-            .len()
+        let size = (self.len() as u32)
             .strict_mul(P::SIZE)
             .strict_add(size_of::<SpaHeader>() as u32);
 
@@ -247,7 +261,7 @@ where
         //         If `P::SIZE` is not a multiple of eight, then we know the length of `body` is equal to
         //         the byte size of `self`, plus any additional padding.
         let (body, _pad_that_is_already_over_written) = unsafe {
-            body.split_at_mut_unchecked(self.len().strict_mul(P::SIZE) as usize)
+            body.split_at_mut_unchecked(self.len().strict_mul(P::SIZE as usize))
         };
 
         // Copy over the slice itself.
@@ -417,7 +431,7 @@ where
             //         `bytes`.
             let data =
                 unsafe { (&raw mut *bytes).cast::<P>().byte_add(slice_offset) };
-            let slice = ptr::slice_from_raw_parts_mut(data, slice_len as usize);
+            let slice = ptr::slice_from_raw_parts_mut(data, slice_len);
 
             // SAFETY: We know that there's no aliased mutability within `slice`, and that it is a valid
             //         allocation, and satisfies the invariants of `SpaSlice`.
@@ -461,7 +475,7 @@ where
 {
     #[inline(always)]
     fn default() -> Self {
-        SpaSlice::empty()
+        SpaSlice::empty_mut()
     }
 }
 

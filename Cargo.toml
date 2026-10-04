@@ -18,7 +18,7 @@ members = ["crates/spa"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.100.0"
 description = "Shitty pipewire library"
 homepage = "https://github.com/herabit/landline"
 repository = "https://github.com/herabit/landline"
