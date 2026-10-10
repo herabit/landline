@@ -720,26 +720,6 @@ impl SpaStr {
         self
     }
 
-    #[track_caller]
-    fn to_ascii_lowercase_inner(&self) -> Box<SpaStr> {
-        let body = self.as_bytes();
-        let mut buf: Box<[MaybeUninit<u8>]> =
-            Box::new_uninit_slice(body.len().strict_add(1));
-
-        for i in 0..body.len() {
-            buf[i].write(body[i].to_ascii_lowercase());
-        }
-
-        buf[body.len()].write(Nul as u8);
-
-        // SAFETY: We initialized the buffer properly.
-        unsafe {
-            Box::from_raw(
-                Box::into_raw(Box::<[_]>::assume_init(buf)) as *mut SpaStr
-            )
-        }
-    }
-
     /// Returns an owned SPA string where each byte that is ASCII, is replaced with
     /// its lowercase counterpart.
     ///
