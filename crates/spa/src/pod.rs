@@ -310,7 +310,9 @@ pub use choice::*;
 
 mod error;
 #[doc(inline)]
-pub use error::{FromPodErrorError, PodError, Result};
+pub use error::{
+    PodError, PodErrorIntoError, Result, WithPodError, WithUtf8Error,
+};
 
 mod pad;
 #[doc(inline)]
